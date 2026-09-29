@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.0
+// 苫小牧埠頭野球部 成績管理アプリ v3.1
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -13,31 +13,109 @@ db.players=db.players.map(p=>({...p,position:p.position||''}));
 db.atBats=db.atBats.map(x=>x.result==='アウト' && x.detail ? {...x,result:x.detail,detail:null} : x);
 let screen='home',gameId=null,playerId=null,type='公式戦',batEditId=null,pitchEditId=null,eventId=null,announcementId=null,calMonth=new Date().getMonth(),calYear=new Date().getFullYear();
 let admin=false;
+let adminPwSession='';
+let cloudReady=false;
+let cloudSyncTimer=null;
 const ADMIN_KEY='tomakomai_futo_admin_pw';
+const SUPA = window.TOMAKOMAI_SUPABASE || {};
+const sb = (window.supabase && SUPA.url && SUPA.publishableKey) ? window.supabase.createClient(SUPA.url,SUPA.publishableKey) : null;
 function requireAdmin(){
   if(admin) return true;
   toast('管理者のみ変更できます');
   return false;
 }
-function adminLogin(){
+async function adminLogin(){
   const pw=prompt('管理者パスワードを入力してください');
   if(pw===null) return;
-  const saved=localStorage.getItem(ADMIN_KEY)||'0000';
-  if(pw===saved){admin=true;toast('管理者モードになりました');render()}
+  if(sb){
+    try{
+      const {data,error}=await sb.rpc('verify_admin_password',{p_password:pw});
+      if(!error && data===true){admin=true;adminPwSession=pw;localStorage.setItem(ADMIN_KEY,pw);toast('管理者モードになりました');render();return;}
+      if(error) console.warn(error);
+    }catch(e){console.warn(e)}
+  }
+  const saved=localStorage.getItem(ADMIN_KEY)||'6161';
+  if(pw===saved){admin=true;adminPwSession=pw;toast('管理者モードになりました（ローカル確認）');render()}
   else toast('パスワードが違います');
 }
-function adminLogout(){admin=false;toast('管理者モードを終了しました');render()}
-function changeAdminPassword(){
+function adminLogout(){admin=false;adminPwSession='';toast('管理者モードを終了しました');render()}
+async function changeAdminPassword(){
   if(!requireAdmin()) return;
   const pw=prompt('新しい管理者パスワードを入力してください（4文字以上）');
   if(pw===null)return;
   if(pw.length<4)return toast('4文字以上で設定してください');
-  localStorage.setItem(ADMIN_KEY,pw);toast('管理者パスワードを変更しました');
+  if(sb){
+    try{
+      const {data,error}=await sb.rpc('change_admin_password',{p_old_password:adminPwSession,p_new_password:pw});
+      if(error || data!==true){toast('パスワード変更に失敗しました');return;}
+    }catch(e){toast('パスワード変更に失敗しました');return;}
+  }
+  adminPwSession=pw;localStorage.setItem(ADMIN_KEY,pw);toast('管理者パスワードを変更しました');
 }
-
+function localSave(){localStorage.setItem(KEY,JSON.stringify(db))}
+function cloudPayload(){const x=JSON.parse(JSON.stringify(db));x.currentPlayerId=null;return x}
+async function cloudSaveAdmin(){
+  if(!sb||!cloudReady||!admin||!adminPwSession)return;
+  try{
+    const {error}=await sb.rpc('save_app_state',{p_password:adminPwSession,p_data:cloudPayload()});
+    if(error){console.warn('cloud save failed',error);toast('クラウド保存に失敗しました')}
+  }catch(e){console.warn(e)}
+}
+function save(){
+  localSave();
+  if(admin&&adminPwSession){clearTimeout(cloudSyncTimer);cloudSyncTimer=setTimeout(()=>cloudSaveAdmin(),120)}
+}
+function saveLocalOnly(){localSave()}
+async function syncAttendanceCloud(eventId,playerId,status,note){
+  if(!sb||!cloudReady)return;
+  try{
+    const {error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
+    if(error) {console.warn('attendance sync failed',error);toast('出欠のクラウド保存に失敗しました')}
+  }catch(e){console.warn(e)}
+}
+async function cloudInit(){
+  if(!sb){console.warn('Supabase config missing');return}
+  try{
+    const {data,error}=await sb.from('app_state').select('data').eq('id',1).maybeSingle();
+    if(error){console.warn('cloud load failed',error);return}
+    if(data?.data){
+      const localCurrent=db.currentPlayerId||null;
+      db=data.data;
+      db.currentPlayerId=localCurrent;
+      localSave();
+    }
+    cloudReady=true;
+    render();
+  }catch(e){console.warn(e)}
+}
 let bat={result:null,detail:null,pos:null,rbi:0,runs:0,steals:0,cs:0};
 let pitch={inningsOuts:0,bf:0,ab:0,pitches:0,hits:0,hr:0,sacBunt:0,sacFly:0,bb:0,hbp:0,k:0,wp:0,balk:0,runs:0,earnedRuns:0,decision:'',save:0};
 function save(){localStorage.setItem(KEY,JSON.stringify(db))}
+function exportAppData(){
+  if(!requireAdmin())return;
+  const payload={schema:'tomakomai-futo-local-backup',version:'3.3',exportedAt:new Date().toISOString(),db,championshipPhoto:localStorage.getItem('tomakomai_futo_championship_photo')||null};
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  const d=new Date().toISOString().slice(0,10);
+  a.href=url;a.download=`tomakomai-futo-backup-${d}.json`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+  toast('バックアップを保存しました');
+}
+function importAppData(input){
+  if(!requireAdmin())return;
+  const f=input?.files?.[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    try{
+      const payload=JSON.parse(r.result);
+      const compatible=(payload?.schema==='tomakomai-futo-local-backup'||payload?.format==='tomakomai-futo-backup');if(!compatible||!payload.db||!Array.isArray(payload.db.players)||!Array.isArray(payload.db.games))throw new Error('形式が違います');
+      if(!confirm('このバックアップで現在のデータを置き換えます。現在のデータは上書きされます。続けますか？')){input.value='';return;}
+      db=payload.db;
+      if(payload.championshipPhoto)localStorage.setItem('tomakomai_futo_championship_photo',payload.championshipPhoto);else localStorage.removeItem('tomakomai_futo_championship_photo');
+      save();applyChampionshipPhoto();input.value='';toast('バックアップを復元しました');render();
+    }catch(e){input.value='';toast('バックアップの読み込みに失敗しました');alert('バックアップファイルを読み込めませんでした。');}
+  };
+  r.readAsText(f);
+}
 function seasonYearFromDate(date){const d=new Date((date||'')+'T00:00:00');if(Number.isNaN(d.getTime()))return 0;const y=d.getFullYear(),m=d.getMonth()+1;return m>=4?y:y-1;}
 function currentSeasonYear(){const d=new Date();return d.getMonth()+1>=4?d.getFullYear():d.getFullYear()-1;}
 function esc(x){return String(x??'').replace(/[&<>\"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]))}
@@ -247,10 +325,11 @@ function saveAnnouncement(){if(!requireAdmin())return;const text=document.getEle
 function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお知らせを削除しますか？'))return;db.announcements=db.announcements.filter(x=>x.id!==id);save();announcementId=null;toast('お知らせを削除しました');screen='announcements';render()}
 
 function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};e.attendance[pid]=status;save();toast('出欠を更新しました');render()}
-function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};e.attendanceNotes[pid]=String(note||'').trim();save();toast('備考を保存しました');render()}
-function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};e.attendance[pid]=status;save();toast('自分の出欠を更新しました');render()}
-function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';save();toast('管理者を設定しました');render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;save();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');render()}
+function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};e.attendanceNotes[pid]=String(note||'').trim();saveLocalOnly();syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);toast('備考を保存しました');render()}
+function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};e.attendance[pid]=status;saveLocalOnly();syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');toast('自分の出欠を更新しました');render()}
+function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLocalOnly();toast('管理者を設定しました');render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;saveLocalOnly();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');render()}
 
 function selfPlayer(){const isAdminUser=db.currentPlayerId==='admin';const me=db.players.find(p=>p.id===db.currentPlayerId);return `<section class=screen><button class=secondary onclick="screen='home';render()">← メイン画面へ</button><h2>自分の選手を設定</h2><div class=card><h3>👤 この端末を使う人</h3><p class=muted>メイン画面に表示する名前を選択できます。</p><div class=field><label>自分の選手</label><select onchange="setCurrentPlayer(this.value)"><option value="">未設定</option><option value="admin" ${isAdminUser?'selected':''}>管理者</option>${db.players.map(p=>`<option value="${p.id}" ${me?.id===p.id?'selected':''}>${esc(p.name)}（#${esc(p.number)}）</option>`).join('')}</select></div>${isAdminUser?`<div class=notice-box><b>現在の設定</b><br>管理者</div>`:me?`<div class=notice-box><b>現在の設定</b><br>${esc(me.name)}（#${esc(me.number)}）</div>`:`<p class=muted>まだ自分の設定がされていません。</p>`}<button class=secondary onclick="setCurrentPlayer('')">自分の設定を解除</button></div></section>`}
-function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}<p class=muted>初期パスワードは「0000」です。最初に管理者ログインして変更してください。</p></div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存</b><p class=muted>現在はこのブラウザ内に保存する試作版です。</p>${admin?`<button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
+function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p><p class="muted">クラウド：${cloudReady?'接続済み':'接続確認中'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}<p class=muted>管理者パスワードはクラウド側で管理されます。初期設定は「6161」です。</p></div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存・本番移行</b><p class=muted>現在の端末に保存されているデータをバックアップできます。クラウド版へ移行する際にも使用します。</p>${admin?`<button class=primary onclick="exportAppData()">📦 データをバックアップ</button><label class="secondary" style="display:block;text-align:center;margin-top:8px;cursor:pointer">📥 バックアップを復元<input type="file" accept="application/json,.json" style="display:none" onchange="importAppData(this)"></label><button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
 render();
+cloudInit();

@@ -1,9 +1,10 @@
-const CACHE_NAME = 'tomakomai-futo-v3-0';
+const CACHE_NAME = 'tomakomai-futo-v33-0';
 const APP_SHELL = [
   './',
   './index.html',
   './style.css',
   './app.js',
+  './config.js',
   './manifest.json',
   './championship.jpg',
   './icon-192.png',
