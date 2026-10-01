@@ -236,3 +236,33 @@ nav button:first-child{background:#0a5a40}
   .cover-player-select span{font-size:9px}
   .cover-player-select select{min-width:0;width:128px;max-width:128px;height:32px;font-size:10px}
 }
+
+/* v3.6 home layout: compact mobile header, photo between player selector and season stats */
+.cover-title-row{display:block}
+.cover-brand-main{align-items:center}
+.cover-brand-main h2{white-space:nowrap}
+.cover-tools{margin-top:8px;justify-content:flex-start}
+.cover-player-select{align-items:flex-start}
+.season-board-title{display:flex;align-items:center}
+.season-ball{font-size:22px;line-height:1;margin-right:3px}
+@media(max-width:560px){
+  .home-cover{height:455px}
+  .cover-content{padding:12px 12px}
+  .cover-brand-main{gap:8px}
+  .team-f-mark{width:44px;height:44px;font-size:32px}
+  .cover-content h2{font-size:25px;line-height:1;white-space:nowrap;letter-spacing:0}
+  .cover-tools{margin-top:5px;justify-content:flex-start}
+  .cover-player-select{align-items:flex-start;gap:2px}
+  .cover-player-select span{font-size:9px}
+  .cover-player-select select{width:120px;max-width:120px;min-width:120px;height:30px;font-size:10px}
+  .home-summary-in-cover{position:absolute;left:10px;right:10px;top:104px;bottom:auto;display:grid;grid-template-columns:1fr;gap:8px}
+  .home-summary-in-cover .home-stadium-card{min-height:132px;height:132px;border-radius:15px}
+  .home-summary-in-cover .stadium-art{padding:14px;background-position:center 60%}
+  .home-summary-in-cover .stadium-art span{font-size:23px}
+  .home-summary-in-cover .home-season-board{min-height:128px;border-radius:15px}
+  .home-summary-in-cover .season-board-title{font-size:18px;padding:7px 9px}
+  .season-ball{font-size:19px}
+  .home-summary-in-cover .season-metrics b{font-size:24px}
+  .home-summary-in-cover .season-metrics span{font-size:11px}
+  .home-dashboard-inner{padding-top:8px}
+}
