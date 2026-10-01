@@ -220,3 +220,19 @@ nav button:first-child{background:#0a5a40}
 
 .password-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:grid;place-items:center;padding:18px}.password-dialog{width:min(420px,100%);background:white;border-radius:18px;padding:20px;box-shadow:0 16px 45px rgba(0,0,0,.28)}.password-dialog h3{margin:0 0 8px}.password-dialog p{margin:0 0 14px;color:#71808f;font-size:14px}.password-dialog input{width:100%;padding:13px;border:1px solid #cbd6df;border-radius:11px;font-size:18px;box-sizing:border-box}.password-actions{display:flex;gap:8px;margin-top:14px}.password-actions button{flex:1}.password-actions .primary{width:auto}.password-actions .secondary{font-size:15px}
 @media(max-width:520px){header h1{font-size:20px;letter-spacing:.02em;white-space:nowrap}.header-brand{min-width:0;justify-content:center}.password-dialog{padding:18px}}
+
+
+/* v3.5 home mobile layout refinement */
+.header-brand{flex:1}
+@media(max-width:560px){
+  header{padding:10px 12px}
+  .header-brand{display:block}
+  .cover-title-row{position:relative;display:flex;flex-direction:column;align-items:stretch;gap:8px}
+  .cover-brand-main{width:100%;min-width:0;align-items:center}
+  .cover-brand-main > div:last-child{min-width:0;flex:1}
+  .cover-content h2{font-size:25px;line-height:1.05;letter-spacing:.015em;white-space:nowrap}
+  .cover-tools{width:100%;justify-content:flex-end}
+  .cover-player-select{width:auto;align-items:flex-end}
+  .cover-player-select span{font-size:9px}
+  .cover-player-select select{min-width:0;width:128px;max-width:128px;height:32px;font-size:10px}
+}
