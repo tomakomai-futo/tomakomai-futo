@@ -124,7 +124,7 @@ header p{margin:0;color:#fff;font-weight:800;font-size:13px;line-height:1.2;text
 }
 @media(max-width:560px){
   .home-cover{height:510px}
-  .home-summary-in-cover{left:10px;right:10px;bottom:10px;gap:10px}
+  .home-summary-in-cover{left:10px;right:10px;bottom:24px;gap:10px}
   .home-summary-in-cover .home-season-board{min-height:142px}
   .home-summary-in-cover .season-board-title{font-size:19px;padding:7px 10px}
   .home-summary-in-cover .season-metrics span{font-size:11px}
@@ -200,12 +200,12 @@ nav button:first-child{background:#0a5a40}
   .home-summary-in-cover .home-stadium-card{min-height:150px;height:150px}
 }
 @media(max-width:560px){
-  .home-cover{height:505px;border-radius:0 0 22px 22px}
+  .home-cover{height:519px;border-radius:0 0 22px 22px}
   .cover-content{padding:14px 12px}
   .cover-kicker{font-size:7px;letter-spacing:2px}
   .cover-content h2{font-size:26px}
   .team-f-mark{width:46px;height:46px;font-size:34px;border-radius:13px}
-  .home-summary-in-cover{left:10px;right:10px;bottom:10px;gap:10px}
+  .home-summary-in-cover{left:10px;right:10px;bottom:24px;gap:10px}
   .home-summary-in-cover .home-season-board{min-height:142px}
   .home-summary-in-cover .season-board-title{font-size:19px;padding:8px 10px}
   .home-summary-in-cover .season-metrics b{font-size:25px}
