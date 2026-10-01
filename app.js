@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.1
+// 苫小牧埠頭野球部 成績管理アプリ v3.4
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -15,8 +15,11 @@ let screen='home',gameId=null,playerId=null,type='公式戦',batEditId=null,pitc
 let admin=false;
 let adminPwSession='';
 let cloudReady=false;
+let passwordDialogResolve=null;
 let cloudSyncTimer=null;
 const ADMIN_KEY='tomakomai_futo_admin_pw';
+// v3.4: 旧版で保存された管理者パスワードの平文を端末から削除します。
+try{localStorage.removeItem(ADMIN_KEY)}catch(e){}
 const SUPA = window.TOMAKOMAI_SUPABASE || {};
 const sb = (window.supabase && SUPA.url && SUPA.publishableKey) ? window.supabase.createClient(SUPA.url,SUPA.publishableKey) : null;
 function requireAdmin(){
@@ -24,33 +27,55 @@ function requireAdmin(){
   toast('管理者のみ変更できます');
   return false;
 }
+function passwordDialog(title,buttonLabel='確認',initial=''){
+  return new Promise(resolve=>{
+    passwordDialogResolve=resolve;
+    const old=document.getElementById('password-dialog');
+    if(old) old.remove();
+    const el=document.createElement('div');
+    el.id='password-dialog';
+    el.className='password-dialog-backdrop';
+    el.innerHTML=`<div class="password-dialog" role="dialog" aria-modal="true" aria-labelledby="password-dialog-title">
+      <h3 id="password-dialog-title">${esc(title)}</h3>
+      <label class="field"><span>パスワード</span><input id="password-dialog-input" type="password" autocomplete="current-password" inputmode="text" value="${esc(initial)}"></label>
+      <div class="password-dialog-actions"><button type="button" class="secondary" onclick="closePasswordDialog(null)">キャンセル</button><button type="button" class="primary" onclick="closePasswordDialog(document.getElementById('password-dialog-input').value)">${esc(buttonLabel)}</button></div>
+    </div>`;
+    document.body.appendChild(el);
+    const input=el.querySelector('#password-dialog-input');
+    input.focus();
+    input.addEventListener('keydown',e=>{if(e.key==='Enter') closePasswordDialog(input.value);if(e.key==='Escape') closePasswordDialog(null)});
+  });
+}
+function closePasswordDialog(value){
+  const el=document.getElementById('password-dialog');
+  if(el) el.remove();
+  const resolve=passwordDialogResolve;
+  passwordDialogResolve=null;
+  if(resolve) resolve(value);
+}
 async function adminLogin(){
-  const pw=prompt('管理者パスワードを入力してください');
+  const pw=await passwordDialog('管理者ログイン','ログイン');
   if(pw===null) return;
-  if(sb){
-    try{
-      const {data,error}=await sb.rpc('verify_admin_password',{p_password:pw});
-      if(!error && data===true){admin=true;adminPwSession=pw;localStorage.setItem(ADMIN_KEY,pw);toast('管理者モードになりました');render();return;}
-      if(error) console.warn(error);
-    }catch(e){console.warn(e)}
-  }
-  const saved=localStorage.getItem(ADMIN_KEY)||'6161';
-  if(pw===saved){admin=true;adminPwSession=pw;toast('管理者モードになりました（ローカル確認）');render()}
-  else toast('パスワードが違います');
+  if(!sb){toast('クラウドに接続できないためログインできません');return;}
+  try{
+    const {data,error}=await sb.rpc('verify_admin_password',{p_password:pw});
+    if(!error && data===true){admin=true;adminPwSession=pw;toast('管理者モードになりました');render();return;}
+    if(error) console.warn(error);
+  }catch(e){console.warn(e)}
+  toast('パスワードが違います');
 }
 function adminLogout(){admin=false;adminPwSession='';toast('管理者モードを終了しました');render()}
 async function changeAdminPassword(){
   if(!requireAdmin()) return;
-  const pw=prompt('新しい管理者パスワードを入力してください（4文字以上）');
+  const pw=await passwordDialog('新しい管理者パスワード','変更する');
   if(pw===null)return;
   if(pw.length<4)return toast('4文字以上で設定してください');
-  if(sb){
-    try{
-      const {data,error}=await sb.rpc('change_admin_password',{p_old_password:adminPwSession,p_new_password:pw});
-      if(error || data!==true){toast('パスワード変更に失敗しました');return;}
-    }catch(e){toast('パスワード変更に失敗しました');return;}
-  }
-  adminPwSession=pw;localStorage.setItem(ADMIN_KEY,pw);toast('管理者パスワードを変更しました');
+  if(!sb){toast('クラウドに接続できないため変更できません');return;}
+  try{
+    const {data,error}=await sb.rpc('change_admin_password',{p_old_password:adminPwSession,p_new_password:pw});
+    if(error || data!==true){toast('パスワード変更に失敗しました');return;}
+  }catch(e){toast('パスワード変更に失敗しました');return;}
+  adminPwSession=pw;toast('管理者パスワードを変更しました');
 }
 function localSave(){localStorage.setItem(KEY,JSON.stringify(db))}
 function cloudPayload(){const x=JSON.parse(JSON.stringify(db));x.currentPlayerId=null;return x}
@@ -259,7 +284,7 @@ function stats(){
   const uBat=rowsBat.filter(x=>!x.qualified).sort((a,b)=>b.pa-a.pa||sortNum(b.avg)-sortNum(a.avg)||a.p.number.localeCompare(b.p.number));
   const qpitch=rowsPitch.filter(x=>x.qualified).sort((a,b)=>sortNum(a.era)-sortNum(b.era)||b.outs-a.outs||a.p.number.localeCompare(b.p.number));
   const uPitch=rowsPitch.filter(x=>!x.qualified).sort((a,b)=>b.outs-a.outs||sortNum(a.era)-sortNum(b.era)||a.p.number.localeCompare(b.p.number));
-  const leaderClass=(x,key,source,mode='max')=>{const vals=source.map(v=>annualNum(v[key])).filter(v=>Number.isFinite(v));if(!vals.length)return '';const best=Math.max(...vals);if(best===0)return '';return annualNum(x[key])===best?' top-stat':''};
+  const leaderClass=(x,key,source,mode='max')=>{const vals=source.map(v=>annualNum(v[key])).filter(v=>Number.isFinite(v));if(!vals.length)return '';const best=mode==='min'?Math.min(...vals):Math.max(...vals);if(best===0)return '';return annualNum(x[key])===best?' top-stat':''};
   const batLeaders={};
   ['games','pa','ab','runs','h','d2','d3','hr','tb','rbi','steals','sacBunt','sacFly','bbHbp','k','errors','rispAB','rispH','pitches'].forEach(k=>batLeaders[k]=rowsBat);
   ['avg','slg','obp','ops','rispAvg','pitchAvg'].forEach(k=>batLeaders[k]=qbat);
@@ -271,7 +296,7 @@ function stats(){
   const batAvg=batAll.ab?batAll.h/batAll.ab:0,batSlg=batAll.ab?batAll.tb/batAll.ab:0,batObp=(batAll.ab+batAll.bbHbp+batAll.sacFly)?(batAll.h+batAll.bbHbp)/(batAll.ab+batAll.bbHbp+batAll.sacFly):0;
   const fmt3=v=>v.toFixed(3).replace(/^0/,'');
   const teamBatRow=`<tr class="team-total"><td><b>チーム計</b></td><td><b>${fmt3(batAvg)}</b></td><td>${teamGames}</td><td>${batAll.pa}</td><td>${batAll.ab}</td><td>${batAll.runs}</td><td>${batAll.h}</td><td>${batAll.d2}</td><td>${batAll.d3}</td><td>${batAll.hr}</td><td>${batAll.tb}</td><td>${batAll.rbi}</td><td>${batAll.steals}</td><td>${batAll.sacBunt}</td><td>${batAll.sacFly}</td><td>${batAll.bbHbp}</td><td>${batAll.k}</td><td>${batAll.errors}</td><td>${fmt3(batSlg)}</td><td>${fmt3(batObp)}</td><td>${fmt3(batSlg+batObp)}</td><td>${batAll.rispAB?fmt3(batAll.rispH/batAll.rispAB):'-'}</td><td>${batAll.rispAB}</td><td>${batAll.rispH}</td><td>${batAll.pitches}</td><td>${batAll.pa?(batAll.pitches/batAll.pa).toFixed(2):'-'}</td></tr>`;
-  const pitchTable=rows=>rows.map(x=>`<tr class="${x.qualified?'qualified':''}"><td>${esc(x.p.name)}(${esc(x.p.number)})</td><td class="${leaderClass(x,'era',pitchLeaders.era)}"><b>${x.era}</b></td><td class="${leaderClass(x,'games',pitchLeaders.games)}">${x.games}</td><td class="${leaderClass(x,'w',pitchLeaders.w)}">${x.w||''}</td><td class="${leaderClass(x,'l',pitchLeaders.l)}">${x.l||''}</td><td class="${leaderClass(x,'s',pitchLeaders.s)}">${x.s||''}</td><td class="${leaderClass(x,'outs',pitchLeaders.outs)}">${ipText(x.outs)}</td><td class="${leaderClass(x,'bf',pitchLeaders.bf)}">${x.bf}</td><td class="${leaderClass(x,'ab',pitchLeaders.ab)}">${x.ab}</td><td class="${leaderClass(x,'pitches',pitchLeaders.pitches)}">${x.pitches}</td><td class="${leaderClass(x,'hits',pitchLeaders.hits)}">${x.hits}</td><td class="${leaderClass(x,'hr',pitchLeaders.hr)}">${x.hr}</td><td class="${leaderClass(x,'sacBunt',pitchLeaders.sacBunt)}">${x.sacBunt}</td><td class="${leaderClass(x,'sacFly',pitchLeaders.sacFly)}">${x.sacFly}</td><td class="${leaderClass(x,'bb',pitchLeaders.bb)}">${x.bb}</td><td class="${leaderClass(x,'hbp',pitchLeaders.hbp)}">${x.hbp}</td><td class="${leaderClass(x,'k',pitchLeaders.k)}">${x.k}</td><td class="${leaderClass(x,'wp',pitchLeaders.wp)}">${x.wp}</td><td class="${leaderClass(x,'balk',pitchLeaders.balk)}">${x.balk}</td><td class="${leaderClass(x,'runs',pitchLeaders.runs)}">${x.runs}</td><td class="${leaderClass(x,'earnedRuns',pitchLeaders.earnedRuns)}">${x.earnedRuns}</td></tr>`).join('');
+  const pitchTable=rows=>rows.map(x=>`<tr class="${x.qualified?'qualified':''}"><td>${esc(x.p.name)}(${esc(x.p.number)})</td><td class="${leaderClass(x,'era',pitchLeaders.era,'min')}"><b>${x.era}</b></td><td class="${leaderClass(x,'games',pitchLeaders.games)}">${x.games}</td><td class="${leaderClass(x,'w',pitchLeaders.w)}">${x.w||''}</td><td class="${leaderClass(x,'l',pitchLeaders.l)}">${x.l||''}</td><td class="${leaderClass(x,'s',pitchLeaders.s)}">${x.s||''}</td><td class="${leaderClass(x,'outs',pitchLeaders.outs)}">${ipText(x.outs)}</td><td class="${leaderClass(x,'bf',pitchLeaders.bf)}">${x.bf}</td><td class="${leaderClass(x,'ab',pitchLeaders.ab)}">${x.ab}</td><td class="${leaderClass(x,'pitches',pitchLeaders.pitches)}">${x.pitches}</td><td class="${leaderClass(x,'hits',pitchLeaders.hits)}">${x.hits}</td><td class="${leaderClass(x,'hr',pitchLeaders.hr)}">${x.hr}</td><td class="${leaderClass(x,'sacBunt',pitchLeaders.sacBunt)}">${x.sacBunt}</td><td class="${leaderClass(x,'sacFly',pitchLeaders.sacFly)}">${x.sacFly}</td><td class="${leaderClass(x,'bb',pitchLeaders.bb)}">${x.bb}</td><td class="${leaderClass(x,'hbp',pitchLeaders.hbp)}">${x.hbp}</td><td class="${leaderClass(x,'k',pitchLeaders.k)}">${x.k}</td><td class="${leaderClass(x,'wp',pitchLeaders.wp)}">${x.wp}</td><td class="${leaderClass(x,'balk',pitchLeaders.balk)}">${x.balk}</td><td class="${leaderClass(x,'runs',pitchLeaders.runs)}">${x.runs}</td><td class="${leaderClass(x,'earnedRuns',pitchLeaders.earnedRuns)}">${x.earnedRuns}</td></tr>`).join('');
   const pitchAll=rowsPitch.reduce((t,x)=>{for(const k of ['outs','w','l','s','bf','ab','pitches','hits','hr','sacBunt','sacFly','bb','hbp','k','wp','balk','runs','earnedRuns'])t[k]+=annualNum(x[k]);return t;},{outs:0,w:0,l:0,s:0,bf:0,ab:0,pitches:0,hits:0,hr:0,sacBunt:0,sacFly:0,bb:0,hbp:0,k:0,wp:0,balk:0,runs:0,earnedRuns:0});
   const teamEra=pitchAll.outs?(pitchAll.earnedRuns*27/pitchAll.outs).toFixed(2):'-';
   const teamPitchRow=`<tr class="team-total"><td><b>チーム計</b></td><td><b>${teamEra}</b></td><td>${teamGames}</td><td>${pitchAll.w}</td><td>${pitchAll.l}</td><td>${pitchAll.s}</td><td>${ipText(pitchAll.outs)}</td><td>${pitchAll.bf}</td><td>${pitchAll.ab}</td><td>${pitchAll.pitches}</td><td>${pitchAll.hits}</td><td>${pitchAll.hr}</td><td>${pitchAll.sacBunt}</td><td>${pitchAll.sacFly}</td><td>${pitchAll.bb}</td><td>${pitchAll.hbp}</td><td>${pitchAll.k}</td><td>${pitchAll.wp}</td><td>${pitchAll.balk}</td><td>${pitchAll.runs}</td><td>${pitchAll.earnedRuns}</td></tr>`;

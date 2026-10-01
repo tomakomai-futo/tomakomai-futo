@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tomakomai-futo-v33-0';
+const CACHE_NAME = 'tomakomai-futo-v34-0';
 const APP_SHELL = [
   './',
   './index.html',
