@@ -15,11 +15,7 @@ let screen='home',gameId=null,playerId=null,type='公式戦',batEditId=null,pitc
 let admin=false;
 let adminPwSession='';
 let cloudReady=false;
-let passwordDialogResolve=null;
 let cloudSyncTimer=null;
-const ADMIN_KEY='tomakomai_futo_admin_pw';
-// v3.4: 旧版で保存された管理者パスワードの平文を端末から削除します。
-try{localStorage.removeItem(ADMIN_KEY)}catch(e){}
 const SUPA = window.TOMAKOMAI_SUPABASE || {};
 const sb = (window.supabase && SUPA.url && SUPA.publishableKey) ? window.supabase.createClient(SUPA.url,SUPA.publishableKey) : null;
 function requireAdmin(){
@@ -27,36 +23,26 @@ function requireAdmin(){
   toast('管理者のみ変更できます');
   return false;
 }
-function passwordDialog(title,buttonLabel='確認',initial=''){
-  return new Promise(resolve=>{
-    passwordDialogResolve=resolve;
-    const old=document.getElementById('password-dialog');
+async function askPassword(title, message, confirmText='確定'){
+  return await new Promise(resolve=>{
+    const old=document.getElementById('password-modal');
     if(old) old.remove();
-    const el=document.createElement('div');
-    el.id='password-dialog';
-    el.className='password-dialog-backdrop';
-    el.innerHTML=`<div class="password-dialog" role="dialog" aria-modal="true" aria-labelledby="password-dialog-title">
-      <h3 id="password-dialog-title">${esc(title)}</h3>
-      <label class="field"><span>パスワード</span><input id="password-dialog-input" type="password" autocomplete="current-password" inputmode="text" value="${esc(initial)}"></label>
-      <div class="password-dialog-actions"><button type="button" class="secondary" onclick="closePasswordDialog(null)">キャンセル</button><button type="button" class="primary" onclick="closePasswordDialog(document.getElementById('password-dialog-input').value)">${esc(buttonLabel)}</button></div>
-    </div>`;
-    document.body.appendChild(el);
-    const input=el.querySelector('#password-dialog-input');
-    input.focus();
-    input.addEventListener('keydown',e=>{if(e.key==='Enter') closePasswordDialog(input.value);if(e.key==='Escape') closePasswordDialog(null)});
+    const wrap=document.createElement('div');
+    wrap.id='password-modal';
+    wrap.innerHTML=`<div class="password-backdrop"><div class="password-dialog" role="dialog" aria-modal="true" aria-labelledby="password-dialog-title"><h3 id="password-dialog-title">${esc(title)}</h3><p>${esc(message)}</p><input id="password-dialog-input" type="password" autocomplete="off" inputmode="text" placeholder="パスワードを入力" aria-label="パスワード"><div class="password-actions"><button type="button" id="password-cancel" class="secondary">キャンセル</button><button type="button" id="password-ok" class="primary">${esc(confirmText)}</button></div></div></div>`;
+    document.body.appendChild(wrap);
+    const input=document.getElementById('password-dialog-input');
+    const finish=v=>{wrap.remove();resolve(v)};
+    document.getElementById('password-cancel').onclick=()=>finish(null);
+    document.getElementById('password-ok').onclick=()=>finish(input.value);
+    input.addEventListener('keydown',e=>{if(e.key==='Enter')finish(input.value);if(e.key==='Escape')finish(null)});
+    setTimeout(()=>input.focus(),0);
   });
 }
-function closePasswordDialog(value){
-  const el=document.getElementById('password-dialog');
-  if(el) el.remove();
-  const resolve=passwordDialogResolve;
-  passwordDialogResolve=null;
-  if(resolve) resolve(value);
-}
 async function adminLogin(){
-  const pw=await passwordDialog('管理者ログイン','ログイン');
-  if(pw===null) return;
-  if(!sb){toast('クラウドに接続できないためログインできません');return;}
+  const pw=await askPassword('管理者ログイン','管理者パスワードを入力してください');
+  if(pw===null)return;
+  if(!sb){toast('クラウドに接続できないため管理者ログインできません');return}
   try{
     const {data,error}=await sb.rpc('verify_admin_password',{p_password:pw});
     if(!error && data===true){admin=true;adminPwSession=pw;toast('管理者モードになりました');render();return;}
@@ -67,10 +53,10 @@ async function adminLogin(){
 function adminLogout(){admin=false;adminPwSession='';toast('管理者モードを終了しました');render()}
 async function changeAdminPassword(){
   if(!requireAdmin()) return;
-  const pw=await passwordDialog('新しい管理者パスワード','変更する');
+  const pw=await askPassword('管理者パスワードの変更','新しいパスワードを入力してください（4文字以上）','変更する');
   if(pw===null)return;
   if(pw.length<4)return toast('4文字以上で設定してください');
-  if(!sb){toast('クラウドに接続できないため変更できません');return;}
+  if(!sb)return toast('クラウドに接続できないため変更できません');
   try{
     const {data,error}=await sb.rpc('change_admin_password',{p_old_password:adminPwSession,p_new_password:pw});
     if(error || data!==true){toast('パスワード変更に失敗しました');return;}
@@ -355,6 +341,6 @@ function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理�
 function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLocalOnly();toast('管理者を設定しました');render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;saveLocalOnly();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');render()}
 
 function selfPlayer(){const isAdminUser=db.currentPlayerId==='admin';const me=db.players.find(p=>p.id===db.currentPlayerId);return `<section class=screen><button class=secondary onclick="screen='home';render()">← メイン画面へ</button><h2>自分の選手を設定</h2><div class=card><h3>👤 この端末を使う人</h3><p class=muted>メイン画面に表示する名前を選択できます。</p><div class=field><label>自分の選手</label><select onchange="setCurrentPlayer(this.value)"><option value="">未設定</option><option value="admin" ${isAdminUser?'selected':''}>管理者</option>${db.players.map(p=>`<option value="${p.id}" ${me?.id===p.id?'selected':''}>${esc(p.name)}（#${esc(p.number)}）</option>`).join('')}</select></div>${isAdminUser?`<div class=notice-box><b>現在の設定</b><br>管理者</div>`:me?`<div class=notice-box><b>現在の設定</b><br>${esc(me.name)}（#${esc(me.number)}）</div>`:`<p class=muted>まだ自分の設定がされていません。</p>`}<button class=secondary onclick="setCurrentPlayer('')">自分の設定を解除</button></div></section>`}
-function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p><p class="muted">クラウド：${cloudReady?'接続済み':'接続確認中'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}<p class=muted>管理者パスワードはクラウド側で管理されます。初期設定は「6161」です。</p></div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存・本番移行</b><p class=muted>現在の端末に保存されているデータをバックアップできます。クラウド版へ移行する際にも使用します。</p>${admin?`<button class=primary onclick="exportAppData()">📦 データをバックアップ</button><label class="secondary" style="display:block;text-align:center;margin-top:8px;cursor:pointer">📥 バックアップを復元<input type="file" accept="application/json,.json" style="display:none" onchange="importAppData(this)"></label><button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
+function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p><p class="muted">クラウド：${cloudReady?'接続済み':'接続確認中'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}</div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存・本番移行</b><p class=muted>現在の端末に保存されているデータをバックアップできます。クラウド版へ移行する際にも使用します。</p>${admin?`<button class=primary onclick="exportAppData()">📦 データをバックアップ</button><label class="secondary" style="display:block;text-align:center;margin-top:8px;cursor:pointer">📥 バックアップを復元<input type="file" accept="application/json,.json" style="display:none" onchange="importAppData(this)"></label><button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
 render();
 cloudInit();
