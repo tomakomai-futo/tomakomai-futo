@@ -167,7 +167,6 @@ function home(){
       <div class="cover-photo baseball-photo" aria-hidden="true"></div>
       <div class="cover-overlay"></div>
       <div class="cover-content">
-        <div class="cover-title-row"><div class="cover-brand-main"><div class="team-f-mark" aria-label="苫小牧埠頭 F">F</div><div><h2>苫小牧埠頭野球部</h2></div></div></div>
         <div class="cover-tools"><label class="cover-player-select"><span>👤 自分の選手を選択</span><select onchange="setCurrentPlayer(this.value)"><option value="">未設定</option><option value="admin" ${db.currentPlayerId==='admin'?'selected':''}>管理者</option>${db.players.map(p=>`<option value="${p.id}" ${db.currentPlayerId===p.id?'selected':''}>${esc(p.name)}（#${esc(p.number)}）</option>`).join('')}</select></label></div>
         <div class="home-summary-row home-summary-in-cover">
           <div class="slogan-photo-wrap"><div class="stadium-card home-stadium-card"><div class="stadium-art championship-photo"><span>仲間と、<br>最高の景色を。</span></div></div></div>

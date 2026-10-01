@@ -266,3 +266,32 @@ nav button:first-child{background:#0a5a40}
   .home-summary-in-cover .season-metrics span{font-size:11px}
   .home-dashboard-inner{padding-top:8px}
 }
+
+
+/* v3.7 mobile home header refinement */
+.header-team-brand{display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;color:#fff;white-space:nowrap}
+.header-f-mark{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;color:#f4d36b;font-family:Georgia,'Times New Roman',serif;font-size:29px;font-weight:900;font-style:italic;line-height:1;border:2px solid rgba(244,211,107,.9);background:rgba(5,35,25,.55);box-shadow:0 0 0 3px rgba(244,211,107,.10);text-shadow:1px 1px 0 #7c5d14;flex:0 0 auto}
+.header-team-name{font-size:22px;font-weight:900;letter-spacing:.04em;line-height:1;overflow:hidden;text-overflow:clip}
+@media(max-width:560px){
+  header{height:58px;padding:0 8px;grid-template-columns:36px 1fr 36px}
+  .menu-button,.settings-button{width:34px;height:34px;font-size:23px}
+  .settings-button{font-size:22px}
+  .header-team-brand{gap:6px}
+  .header-f-mark{width:34px;height:34px;font-size:25px}
+  .header-team-name{font-size:17px;letter-spacing:.02em}
+  .home-dashboard{min-height:calc(100vh - 58px)}
+  .home-cover{height:auto;min-height:0;overflow:visible;box-shadow:none}
+  .cover-content{height:auto;padding:8px 10px 0}
+  .cover-tools{justify-content:flex-end;margin:0 0 8px}
+  .cover-player-select{gap:2px;font-size:9px}
+  .cover-player-select select{min-width:120px;width:120px;height:32px;font-size:10px;padding:0 7px}
+  .home-summary-in-cover{position:static;display:flex;flex-direction:column;gap:8px;margin:0;align-items:stretch}
+  .home-summary-in-cover .home-stadium-card{order:1;min-height:132px;height:132px;margin:0;border-radius:12px}
+  .home-summary-in-cover .home-season-board{order:2;min-height:0;width:100%;margin:0;border-radius:12px}
+  .home-summary-in-cover .stadium-art{padding:18px}
+  .home-summary-in-cover .stadium-art span{font-size:24px}
+  .home-summary-in-cover .season-board-title{font-size:18px;padding:7px 10px}
+  .home-summary-in-cover .season-metrics b{font-size:23px}
+  .home-summary-in-cover .season-metrics span{font-size:11px}
+  .home-main-actions{margin:8px 0 12px}
+}
