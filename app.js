@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.4
+// 苫小牧埠頭野球部 成績管理アプリ v3.10.1
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -15,7 +15,8 @@ let screen='home',gameId=null,playerId=null,type='公式戦',batEditId=null,pitc
 let admin=false;
 let adminPwSession='';
 let cloudReady=false;
-let cloudSyncTimer=null;
+let cloudInitPromise=null;
+let cloudSaveChain=Promise.resolve();
 const SUPA = window.TOMAKOMAI_SUPABASE || {};
 const sb = (window.supabase && SUPA.url && SUPA.publishableKey) ? window.supabase.createClient(SUPA.url,SUPA.publishableKey) : null;
 function requireAdmin(){
@@ -65,17 +66,54 @@ async function changeAdminPassword(){
 }
 function localSave(){localStorage.setItem(KEY,JSON.stringify(db))}
 function cloudPayload(){const x=JSON.parse(JSON.stringify(db));x.currentPlayerId=null;return x}
-async function cloudSaveAdmin(){
-  if(!sb||!cloudReady||!admin||!adminPwSession)return;
+async function cloudSaveAdmin(payload,pw){
+  if(!sb||!pw)return false;
+  if(cloudInitPromise){
+    try{await cloudInitPromise}catch(e){}
+  }
+  if(!cloudReady)return false;
   try{
-    const {error}=await sb.rpc('save_app_state',{p_password:adminPwSession,p_data:cloudPayload()});
-    if(error){console.warn('cloud save failed',error);toast('クラウド保存に失敗しました')}
-  }catch(e){console.warn(e)}
+    const {data,error}=await sb.rpc('save_app_state',{p_password:pw,p_data:payload});
+    if(error || data!==true){
+      console.warn('cloud save failed',error||'save_app_state returned false');
+      toast('クラウド保存に失敗しました');
+      return false;
+    }
+    return true;
+  }catch(e){
+    console.warn(e);
+    toast('クラウド保存に失敗しました');
+    return false;
+  }
 }
 function save(){
   localSave();
-  if(admin&&adminPwSession){clearTimeout(cloudSyncTimer);cloudSyncTimer=setTimeout(()=>cloudSaveAdmin(),120)}
+  if(admin&&adminPwSession){
+    const payload=cloudPayload();
+    const pw=adminPwSession;
+    cloudSaveChain=cloudSaveChain
+      .then(()=>cloudSaveAdmin(payload,pw))
+      .catch(e=>{console.warn('cloud save queue failed',e);toast('クラウド保存に失敗しました')});
+  }
 }
+function cloudSaveKeepalive(){
+  if(!admin||!adminPwSession||!SUPA.url||!SUPA.publishableKey)return;
+  try{
+    const body=JSON.stringify({p_password:adminPwSession,p_data:cloudPayload()});
+    fetch(SUPA.url+'/rest/v1/rpc/save_app_state',{
+      method:'POST',
+      headers:{
+        'apikey':SUPA.publishableKey,
+        'Authorization':'Bearer '+SUPA.publishableKey,
+        'Content-Type':'application/json'
+      },
+      body,
+      keepalive:true
+    }).catch(()=>{});
+  }catch(e){}
+}
+window.addEventListener('pagehide',cloudSaveKeepalive);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')cloudSaveKeepalive()});
 function saveLocalOnly(){localSave()}
 async function syncAttendanceCloud(eventId,playerId,status,note){
   if(!sb||!cloudReady)return;
@@ -101,7 +139,6 @@ async function cloudInit(){
 }
 let bat={result:null,detail:null,pos:null,rbi:0,runs:0,steals:0,cs:0};
 let pitch={inningsOuts:0,bf:0,ab:0,pitches:0,hits:0,hr:0,sacBunt:0,sacFly:0,bb:0,hbp:0,k:0,wp:0,balk:0,runs:0,earnedRuns:0,decision:'',save:0};
-function save(){localStorage.setItem(KEY,JSON.stringify(db))}
 function exportAppData(){
   if(!requireAdmin())return;
   const payload={schema:'tomakomai-futo-local-backup',version:'3.3',exportedAt:new Date().toISOString(),db,championshipPhoto:localStorage.getItem('tomakomai_futo_championship_photo')||null};
@@ -351,4 +388,4 @@ function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLo
 function selfPlayer(){const isAdminUser=db.currentPlayerId==='admin';const me=db.players.find(p=>p.id===db.currentPlayerId);return `<section class=screen><button class=secondary onclick="screen='home';render()">← メイン画面へ</button><h2>自分の選手を設定</h2><div class=card><h3>👤 この端末を使う人</h3><p class=muted>メイン画面に表示する名前を選択できます。</p><div class=field><label>自分の選手</label><select onchange="setCurrentPlayer(this.value)"><option value="">未設定</option><option value="admin" ${isAdminUser?'selected':''}>管理者</option>${db.players.map(p=>`<option value="${p.id}" ${me?.id===p.id?'selected':''}>${esc(p.name)}（#${esc(p.number)}）</option>`).join('')}</select></div>${isAdminUser?`<div class=notice-box><b>現在の設定</b><br>管理者</div>`:me?`<div class=notice-box><b>現在の設定</b><br>${esc(me.name)}（#${esc(me.number)}）</div>`:`<p class=muted>まだ自分の設定がされていません。</p>`}<button class=secondary onclick="setCurrentPlayer('')">自分の設定を解除</button></div></section>`}
 function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p><p class="muted">クラウド：${cloudReady?'接続済み':'接続確認中'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}</div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存・本番移行</b><p class=muted>現在の端末に保存されているデータをバックアップできます。クラウド版へ移行する際にも使用します。</p>${admin?`<button class=primary onclick="exportAppData()">📦 データをバックアップ</button><label class="secondary" style="display:block;text-align:center;margin-top:8px;cursor:pointer">📥 バックアップを復元<input type="file" accept="application/json,.json" style="display:none" onchange="importAppData(this)"></label><button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
 render();
-cloudInit();
+cloudInitPromise=cloudInit();
