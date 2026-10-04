@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.10.1
+// 苫小牧埠頭野球部 成績管理アプリ v3.10.2
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -380,7 +380,7 @@ function announcementForm(){const x=db.announcements.find(a=>a.id===announcement
 function saveAnnouncement(){if(!requireAdmin())return;const text=document.getElementById('atext').value.trim();if(!text)return toast('お知らせ内容を入力してください');const x={id:announcementId||Date.now(),date:document.getElementById('adate').value,text};if(announcementId)db.announcements=db.announcements.map(a=>a.id===announcementId?x:a);else db.announcements.push(x);save();toast(announcementId?'お知らせを修正しました':'お知らせを登録しました');announcementId=x.id;screen='announcements';render()}
 function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお知らせを削除しますか？'))return;db.announcements=db.announcements.filter(x=>x.id!==id);save();announcementId=null;toast('お知らせを削除しました');screen='announcements';render()}
 
-function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};e.attendance[pid]=status;save();toast('出欠を更新しました');render()}
+async function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};e.attendance[pid]=status;localSave();await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');toast('出欠を更新しました');render()}
 function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};e.attendanceNotes[pid]=String(note||'').trim();saveLocalOnly();syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);toast('備考を保存しました');render()}
 function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};e.attendance[pid]=status;saveLocalOnly();syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');toast('自分の出欠を更新しました');render()}
 function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLocalOnly();toast('管理者を設定しました');render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;saveLocalOnly();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');render()}
