@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.10.4
+// 苫小牧埠頭野球部 成績管理アプリ v3.10.3
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -17,7 +17,7 @@ let adminPwSession='';
 let cloudReady=false;
 let cloudInitPromise=null;
 let cloudSaveChain=Promise.resolve();
-let cloudDirty=false;
+let attendanceCloudChain=Promise.resolve();
 const SUPA = window.TOMAKOMAI_SUPABASE || {};
 const sb = (window.supabase && SUPA.url && SUPA.publishableKey) ? window.supabase.createClient(SUPA.url,SUPA.publishableKey) : null;
 function requireAdmin(){
@@ -74,20 +74,6 @@ async function cloudSaveAdmin(payload,pw){
   }
   if(!cloudReady)return false;
   try{
-    // 通常保存が出欠の最新クラウド値を古いローカル値で上書きしないよう、
-    // 保存直前にクラウド側の出欠だけを取り込む。
-    try{
-      const {data:remote}=await sb.from('app_state').select('data').eq('id',1).maybeSingle();
-      const re=remote?.data?.events;
-      if(Array.isArray(re) && Array.isArray(payload.events)){
-        const remoteMap=new Map(re.map(e=>[String(e.id),e]));
-        payload.events=payload.events.map(e=>{
-          const r=remoteMap.get(String(e.id));
-          if(!r)return e;
-          return {...e,attendance:r.attendance||{},attendanceNotes:r.attendanceNotes||{}};
-        });
-      }
-    }catch(e){console.warn('attendance merge skipped',e)}
     const {data,error}=await sb.rpc('save_app_state',{p_password:pw,p_data:payload});
     if(error || data!==true){
       console.warn('cloud save failed',error||'save_app_state returned false');
@@ -104,16 +90,15 @@ async function cloudSaveAdmin(payload,pw){
 function save(){
   localSave();
   if(admin&&adminPwSession){
-    cloudDirty=true;
-    const payload=cloudPayload();
     const pw=adminPwSession;
     cloudSaveChain=cloudSaveChain
-      .then(async()=>{const ok=await cloudSaveAdmin(payload,pw);if(ok)cloudDirty=false;return ok})
+      .then(()=>attendanceCloudChain)
+      .then(()=>cloudSaveAdmin(cloudPayload(),pw))
       .catch(e=>{console.warn('cloud save queue failed',e);toast('クラウド保存に失敗しました')});
   }
 }
 function cloudSaveKeepalive(){
-  if(!cloudDirty||!admin||!adminPwSession||!SUPA.url||!SUPA.publishableKey)return;
+  if(!admin||!adminPwSession||!SUPA.url||!SUPA.publishableKey)return;
   try{
     const body=JSON.stringify({p_password:adminPwSession,p_data:cloudPayload()});
     fetch(SUPA.url+'/rest/v1/rpc/save_app_state',{
@@ -144,19 +129,20 @@ async function refreshCloudState(){
     return true;
   }catch(e){console.warn('cloud refresh failed',e);return false}
 }
-async function syncAttendanceCloud(eventId,playerId,status,note){
-  if(!sb||!cloudReady)return false;
-  try{
-    const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
-    if(error||data!==true){
-      console.warn('attendance sync failed',error||'update_attendance returned false');
-      toast('出欠のクラウド保存に失敗しました');
-      return false;
-    }
-    // 保存直後にクラウドの最新状態を読み戻し、管理者・一般ユーザー間の表示を一致させる
-    await refreshCloudState();
-    return true;
-  }catch(e){console.warn(e);toast('出欠のクラウド保存に失敗しました');return false}
+function syncAttendanceCloud(eventId,playerId,status,note){
+  if(!sb||!cloudReady)return Promise.resolve(false);
+  attendanceCloudChain=attendanceCloudChain.then(async()=>{
+    try{
+      const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
+      if(error||data!==true){
+        console.warn('attendance sync failed',error||'update_attendance returned false');
+        toast('出欠のクラウド保存に失敗しました');
+        return false;
+      }
+      return true;
+    }catch(e){console.warn(e);toast('出欠のクラウド保存に失敗しました');return false}
+  });
+  return attendanceCloudChain;
 }
 async function cloudInit(){
   if(!sb){console.warn('Supabase config missing');return}
@@ -271,16 +257,7 @@ function deleteGame(id){if(!requireAdmin())return;let g=db.games.find(x=>x.id===
 function gameForm(){let g=db.games.find(x=>x.id===gameId);let edit=!!g;return `<section class=screen><button class=secondary onclick="screen='games';render()">← 戻る</button><h2>${edit?'試合を修正':'試合を登録'}</h2><div class=card><div class=field><label>試合区分</label><select id=gtype><option value="公式戦" ${g?.type==='公式戦'?'selected':''}>公式戦</option><option value="練習試合" ${g?.type==='練習試合'?'selected':''}>練習試合</option></select></div><div class=field><label>年度</label><select id=gyear ${admin?'':'disabled'}>${Array.from({length:7},(_,i)=>new Date().getFullYear()+2-i).map(y=>`<option value="${y}" ${String(g?.year||((g?.date||new Date().toISOString().slice(0,10)).slice(0,4)))===String(y)?'selected':''}>${y}年度</option>`).join('')}</select></div><div class=field><label>日付</label><input id=gdate ${admin?'':'disabled'} type=date value="${g?.date||new Date().toISOString().slice(0,10)}"></div><div class=field><label>大会・イベント名</label><input id=gtournament ${admin?'':'disabled'} placeholder="例：支部A級大会" value="${esc(g?.tournament||'')}"></div><div class=field><label>球場</label><input id=gvenue ${admin?'':'disabled'} placeholder="例：とましんスタジアム" value="${esc(g?.venue||'')}"></div><div class=field><label>相手チーム</label><input id=gopp ${admin?'':'disabled'} placeholder="相手チーム名" value="${esc(g?.opponent||'')}"></div><div class=field><label>結果</label><select id=gresult><option ${g?.result==='勝'?'selected':''}>勝</option><option ${g?.result==='負'?'selected':''}>負</option><option ${g?.result==='引分'?'selected':''}>引分</option><option ${g?.result==='不戦勝'?'selected':''}>不戦勝</option><option ${g?.result==='不戦敗'?'selected':''}>不戦敗</option></select></div><div class=row><div class=field><label>得点</label><input id=gruns ${admin?'':'disabled'} type=number min=0 value="${g?.runs??0}"></div><div class=field><label>失点</label><input id=gagainst ${admin?'':'disabled'} type=number min=0 value="${g?.against??0}"></div></div>${admin?`<button class=primary onclick="saveGame()">${edit?'この試合を修正':'この試合を登録'}</button>`:`<p class=muted>閲覧モード：試合データの変更は管理者のみ可能です。</p>`}${edit&&admin?`<button class=secondary onclick="if(confirm('この試合を削除しますか？打席・投球記録も削除されます。')){db.games=db.games.filter(x=>x.id!==gameId);db.atBats=db.atBats.filter(x=>x.gameId!==gameId);db.pitches=db.pitches.filter(x=>x.gameId!==gameId);save();gameId=null;screen='games';toast('試合を削除しました');render()}">この試合を削除</button>`:''}</div></section>`}
 function saveGame(){if(!requireAdmin())return;let g={id:gameId||Date.now(),year:+document.getElementById('gyear').value,type:document.getElementById('gtype').value,date:document.getElementById('gdate').value,tournament:document.getElementById('gtournament').value.trim(),venue:document.getElementById('gvenue').value.trim(),opponent:document.getElementById('gopp').value.trim(),result:document.getElementById('gresult').value,runs:+document.getElementById('gruns').value,against:+document.getElementById('gagainst').value};let edit=!!db.games.find(x=>x.id===g.id);if(edit){db.games=db.games.map(x=>x.id===g.id?g:x);toast('試合を修正しました')}else{db.games.push(g);toast('試合を登録しました')}save();gameId=g.id;screen='atbats';render()}
 function players(){const list=db.players.slice().sort((a,b)=>{const na=Number(a.number),nb=Number(b.number);const rank=n=>n===30?0:n===10?1:2;return rank(na)-rank(nb)||na-nb||String(a.name).localeCompare(String(b.name),'ja')});return `<section class=screen><div class=row><div><h2>選手一覧</h2></div>${admin?`<button class=primary onclick="screen='player';playerId=null;render()">＋ 選手を登録</button>`:''}</div>${list.map(p=>`<div class=item><div class=row><div><span class=badge>背番号 ${esc(p.number)}</span><span class=position-badge>${esc(p.position||'未設定')}</span><h3>${esc(p.name)}</h3></div><div class=row>${admin?`<button class=secondary onclick="playerId=${p.id};screen='player';render()">修正</button><button class=secondary onclick="deletePlayer(${p.id})">削除</button>`:''}</div></div></div>`).join('')}</section>`}
-function deletePlayer(id){if(!requireAdmin())return;let p=db.players.find(x=>x.id===id);if(!p)return;if(!confirm(`${p.name}（背番号${p.number}）を選手一覧から削除しますか？\n過去の試合成績・確定済み年間成績は削除されません。`))return;
-  // 現役選手一覧から外すだけにし、過去の打席・投球・年間成績は保持する。
-  if(db.annualStats?.[2026]){
-    const y=db.annualStats[2026];
-    if(!y.playerSnapshots)y.playerSnapshots={};
-    if(y.players?.[id] && !y.playerSnapshots[id])y.playerSnapshots[id]={...p};
-  }
-  db.players=db.players.filter(x=>x.id!==id);
-  if(db.currentPlayerId===id)db.currentPlayerId=null;
-  save();toast('選手一覧から削除しました。過去の成績は残っています');render()}
+function deletePlayer(id){if(!requireAdmin())return;let p=db.players.find(x=>x.id===id);if(!p)return;if(!confirm(`${p.name}（背番号${p.number}）を現役選手一覧から外しますか？\n過去の打席・投球記録と年度確定成績は保持されます。`))return;db.players=db.players.filter(x=>x.id!==id);save();toast('選手を現役一覧から外しました（過去成績は保持）');render()}
 function playerForm(){let p=db.players.find(x=>x.id===playerId);let edit=!!p;return `<section class=screen><button class=secondary onclick="screen='players';render()">← 戻る</button><h2>${edit?'選手情報を修正':'選手を登録'}</h2><div class=card><div class=field><label>背番号</label><input id=pnum ${admin?'':'disabled'} type=number min=0 value="${esc(p?.number||'')}"></div><div class=field><label>氏名</label><input id=pname ${admin?'':'disabled'} placeholder="例：佐藤 太郎" value="${esc(p?.name||'')}"></div><div class=field><label>ポジション区分</label><select id=pposition ${admin?'':'disabled'}><option value="" ${!p?.position?'selected':''}>未設定</option><option value="投手" ${p?.position==='投手'?'selected':''}>投手</option><option value="捕手" ${p?.position==='捕手'?'selected':''}>捕手</option><option value="内野手" ${p?.position==='内野手'?'selected':''}>内野手</option><option value="外野手" ${p?.position==='外野手'?'selected':''}>外野手</option></select></div>${admin?`<button class=primary onclick="savePlayer()">${edit?'この選手を修正':'登録する'}</button>`:`<p class=muted>閲覧モード：選手情報の変更は管理者のみ可能です。</p>`}</div></section>`}
 function savePlayer(){if(!requireAdmin())return;let name=document.getElementById('pname').value.trim();let number=document.getElementById('pnum').value;let position=document.getElementById('pposition').value;if(!name)return toast('氏名を入力してください');if(playerId){db.players=db.players.map(p=>p.id===playerId?{...p,name,number,position}:p);toast('選手情報を修正しました')}else{db.players.push({id:Date.now(),name,number,position});toast('選手を登録しました')}save();screen='players';render()}
 function resetBat(){bat={result:null,detail:null,pos:null,rbi:0,runs:0,steals:0,cs:0};batEditId=null}
@@ -301,21 +278,6 @@ function deletePitch(id){if(!requireAdmin())return;if(!confirm('この投球結�
 function pitches(){let g=db.games.find(x=>x.id===gameId),a=db.pitches.filter(x=>x.gameId===gameId);return `<section class=screen><div class=row><button class=secondary onclick="screen='atbats';render()">← 打席履歴</button>${admin?`<button class=primary onclick="resetPitch();screen='pitching';render()">＋ 投球入力</button>`:''}</div><div class=card><b>${esc(g?.opponent)}</b>　${g?.type}<div class=score>${g?.runs}-${g?.against}</div></div>${a.length?a.slice().reverse().map(x=>{let p=db.players.find(q=>q.id===x.playerId);return `<div class=item><div class=row><b>${esc(p?.name||'投手')}</b><b>${ipText(x.inningsOuts)}</b></div><small>打者${x.bf}　投球${x.pitches}　安打${x.hits}　四球${x.bb}　死球${x.hbp}　三振${x.k}　失点${x.runs}　自責${x.earnedRuns}　${x.decision||''}${x.save?'　S':''}</small><div class=row><span></span><div>${admin?`<button class=secondary onclick="editPitch(${x.id})">修正</button><button class=secondary onclick="deletePitch(${x.id})">削除</button>`:''}</div></div></div>`}).join(''):'<div class=empty>まだ投球結果がありません。</div>'}</section>`}
 function annual2026Active(){const y=db.annualStats?.[2026];return !!(y && (y.active || y.locked || y.teamGames>0 || Object.keys(y.players||{}).length));}
 function annualPlayer(id){return db.annualStats?.[2026]?.players?.[id]||null;}
-function annualRoster(year=2026){
-  const y=db.annualStats?.[year]||{};
-  const current=new Map(db.players.map(p=>[String(p.id),p]));
-  const snapshots=y.playerSnapshots||{};
-  Object.keys(snapshots).forEach(id=>{if(!current.has(String(id)))current.set(String(id),snapshots[id])});
-  const statIds=Object.keys(y.players||{});
-  statIds.forEach(id=>{if(!current.has(String(id))){const snap=snapshots[id];if(snap)current.set(String(id),snap)}});
-  return [...current.values()];
-}
-function ensureAnnualSnapshots(){
-  const y=db.annualStats?.[2026];
-  if(!y)return;
-  if(!y.playerSnapshots)y.playerSnapshots={};
-  Object.keys(y.players||{}).forEach(id=>{if(!y.playerSnapshots[id]){const p=db.players.find(x=>String(x.id)===String(id));if(p)y.playerSnapshots[id]={...p}}});
-}
 function annualNum(v){const n=Number(v);return Number.isFinite(n)?n:0}
 const BAT_ANNUAL_FIELDS=[['games','試合'],['pa','打席'],['ab','打数'],['runs','得点'],['h','安打'],['d2','二塁打'],['d3','三塁打'],['hr','本塁打'],['rbi','打点'],['steals','盗塁'],['sacBunt','犠打'],['sacFly','犠飛'],['bbHbp','四死球'],['k','三振'],['errors','失策'],['rispAB','得点圏打数'],['rispH','得点圏安打'],['pitches','投球数']];
 const PITCH_ANNUAL_FIELDS=[['games','登板'],['w','勝'],['l','敗'],['s','セーブ'],['bf','打者'],['ab','打数'],['pitches','投球数'],['hits','安打'],['hr','本塁打'],['sacBunt','犠打'],['sacFly','犠飛'],['bb','四球'],['hbp','死球'],['k','三振'],['wp','暴投'],['balk','ボーク'],['runs','失点'],['earnedRuns','自責点']];
@@ -323,14 +285,13 @@ function annualInput(field,label,value,step=1,disabled=false){return `<div class
 function annualIpInputs(outs,locked){const o=annualNum(outs),whole=Math.floor(o/3),third=o%3;return `<div class=annual-input><label>投球回</label><div class=annual-ip-row><input type=number min=0 id=annual_ip_whole data-annual-ip-whole value="${whole}" ${locked?'disabled':''}><span>回</span><select id=annual_ip_third data-annual-ip-third ${locked?'disabled':''}><option value=0 ${third===0?'selected':''}>0/3</option><option value=1 ${third===1?'selected':''}>1/3</option><option value=2 ${third===2?'selected':''}>2/3</option></select></div><small class=muted>投球回はイニング数＋1/3・2/3で入力</small></div>`}
 function annual2026(){
   if(!requireAdmin()) {screen='settings';render();return '';}
-  ensureAnnualSnapshots();
   const y=db.annualStats[2026];
   const locked=!!y.locked;
   const teamGames=y.teamGames||db.games.filter(g=>gameYear(g.id)===2026).length;
-  const rows=annualRoster(2026).map(p=>{const b=y.players?.[p.id]?.batting||{},q=y.players?.[p.id]?.pitching||{};const batFields=BAT_ANNUAL_FIELDS.map(([f,l,st])=>annualInput(f,l,f==='bbHbp'?annualNum(b.bb)+annualNum(b.hbp):b[f],st||1,locked)).join('');return `<div class="annual-player-card" data-player-id="${p.id}"><div class="annual-player-head"><b>${esc(p.name)}（#${esc(p.number)}）</b></div><h4>打者成績</h4><div class="annual-grid">${batFields}</div><h4>投手成績</h4><div class="annual-grid">${annualIpInputs(q.outs,locked)}${PITCH_ANNUAL_FIELDS.map(([f,l])=>annualInput('p_'+f,l,q[f],1,locked)).join('')}</div></div>`}).join('');
+  const rows=db.players.map(p=>{const b=y.players?.[p.id]?.batting||{},q=y.players?.[p.id]?.pitching||{};const batFields=BAT_ANNUAL_FIELDS.map(([f,l,st])=>annualInput(f,l,f==='bbHbp'?annualNum(b.bb)+annualNum(b.hbp):b[f],st||1,locked)).join('');return `<div class="annual-player-card" data-player-id="${p.id}"><div class="annual-player-head"><b>${esc(p.name)}（#${esc(p.number)}）</b></div><h4>打者成績</h4><div class="annual-grid">${batFields}</div><h4>投手成績</h4><div class="annual-grid">${annualIpInputs(q.outs,locked)}${PITCH_ANNUAL_FIELDS.map(([f,l])=>annualInput('p_'+f,l,q[f],1,locked)).join('')}</div></div>`}).join('');
   return `<section class="screen"><div class="row"><button class="secondary" onclick="screen='settings';render()">← 設定</button><h2>2026年度一括入力</h2></div><div class="card"><h3>🔒 ${locked?'確定済み':'シーズン終了データ'}</h3><p class="muted">2026年度の年間成績を入力します。確定してロックすると、以後この画面から編集できません。</p><div class="field"><label>2026年度 チーム試合数</label><input id="annualTeamGames" type="number" min="0" value="${teamGames}" ${locked?'disabled':''}></div>${locked?`<div class="notice-box"><b>2026年度成績は確定・ロックされています。</b><br>管理者が設定画面からロック解除できます。</div>`:''}</div>${rows}${locked?'':`<div class="card"><button class="primary" onclick="saveAnnual2026()">入力内容を保存</button><button class="secondary" style="width:100%;margin-top:8px" onclick="lockAnnual2026()">入力内容を確定してロック</button></div>`}</section>`;
 }
-function collectAnnual2026(){const y=db.annualStats[2026];y.teamGames=Math.max(0,annualNum(document.getElementById('annualTeamGames')?.value));y.active=true;if(!y.players)y.players={};if(!y.playerSnapshots)y.playerSnapshots={};document.querySelectorAll('.annual-player-card').forEach(card=>{const p=annualRoster(2026).find(x=>x.id===+card.dataset.playerId);if(!p)return;const batting={},pitching={};card.querySelectorAll('input[data-field]').forEach(inp=>{const f=inp.dataset.field;const v=annualNum(inp.value);if(f.startsWith('p_'))pitching[f.slice(2)]=v;else if(f==='bbHbp'){batting.bb=v;batting.hbp=0;}else batting[f]=v;});const whole=annualNum(card.querySelector('[data-annual-ip-whole]')?.value),third=annualNum(card.querySelector('[data-annual-ip-third]')?.value);pitching.outs=whole*3+Math.min(2,third);y.players[p.id]={batting,pitching};y.playerSnapshots[p.id]={id:p.id,name:p.name,number:p.number,position:p.position||''};});}
+function collectAnnual2026(){const y=db.annualStats[2026];y.teamGames=Math.max(0,annualNum(document.getElementById('annualTeamGames')?.value));y.active=true;y.players={};document.querySelectorAll('.annual-player-card').forEach(card=>{const p=db.players.find(x=>x.id===+card.dataset.playerId);if(!p)return;const batting={},pitching={};card.querySelectorAll('input[data-field]').forEach(inp=>{const f=inp.dataset.field;const v=annualNum(inp.value);if(f.startsWith('p_'))pitching[f.slice(2)]=v;else if(f==='bbHbp'){batting.bb=v;batting.hbp=0;}else batting[f]=v;});const whole=annualNum(card.querySelector('[data-annual-ip-whole]')?.value),third=annualNum(card.querySelector('[data-annual-ip-third]')?.value);pitching.outs=whole*3+Math.min(2,third);y.players[p.id]={batting,pitching};});}
 function saveAnnual2026(){if(!requireAdmin())return;collectAnnual2026();save();toast('2026年度の一括入力を保存しました');render()}
 function lockAnnual2026(){if(!requireAdmin())return;if(!confirm('2026年度の成績を確定してロックしますか？\nロック後は設定画面から解除するまで編集できません。'))return;collectAnnual2026();db.annualStats[2026].locked=true;db.annualStats[2026].active=true;save();toast('2026年度成績を確定・ロックしました');render()}
 function unlockAnnual2026(){if(!requireAdmin())return;if(!confirm('2026年度成績のロックを解除しますか？'))return;db.annualStats[2026].locked=false;save();toast('2026年度成績のロックを解除しました');render()}
@@ -361,9 +322,8 @@ function stats(){
   const seasonGames=db.games.filter(g=>(+g.year||+(g.date||'').slice(0,4))===year);
   const teamGames=(year===2026 && annual2026Active() && db.annualStats[2026].teamGames!=null)?annualNum(db.annualStats[2026].teamGames):seasonGames.length;
   const battingReq=teamGames*2.7, pitchingReq=teamGames*0.8;
-  const roster=(year===2026&&annual2026Active())?annualRoster(2026):db.players;
-  const rowsBat=roster.map(p=>{const s=calc(p.id,year);const games=(year===2026&&annual2026Active())?annualNum(annualPlayer(p.id)?.batting?.games||0):new Set(db.atBats.filter(x=>x.playerId===p.id && gameYear(x.gameId)===year).map(x=>x.gameId)).size;return {...s,p,games,qualified:s.pa>battingReq};}).filter(x=>x.games>0);
-  const rowsPitch=roster.map(p=>{const s=pitchCalc(p.id,year);return {...s,p,qualified:s.outs>pitchingReq*3};}).filter(x=>x.games>0);
+  const rowsBat=db.players.map(p=>{const s=calc(p.id,year);const games=(year===2026&&annual2026Active())?annualNum(annualPlayer(p.id)?.batting?.games||0):new Set(db.atBats.filter(x=>x.playerId===p.id && gameYear(x.gameId)===year).map(x=>x.gameId)).size;return {...s,p,games,qualified:s.pa>battingReq};}).filter(x=>x.games>0);
+  const rowsPitch=db.players.map(p=>{const s=pitchCalc(p.id,year);return {...s,p,qualified:s.outs>pitchingReq*3};}).filter(x=>x.games>0);
   const sortNum=(v)=>v==='-'?-Infinity:+v;
   const qbat=rowsBat.filter(x=>x.qualified).sort((a,b)=>sortNum(b.avg)-sortNum(a.avg)||b.pa-a.pa||a.p.number.localeCompare(b.p.number));
   const uBat=rowsBat.filter(x=>!x.qualified).sort((a,b)=>b.pa-a.pa||sortNum(b.avg)-sortNum(a.avg)||a.p.number.localeCompare(b.p.number));
@@ -442,14 +402,12 @@ function announcementForm(){const x=db.announcements.find(a=>a.id===announcement
 function saveAnnouncement(){if(!requireAdmin())return;const text=document.getElementById('atext').value.trim();if(!text)return toast('お知らせ内容を入力してください');const x={id:announcementId||Date.now(),date:document.getElementById('adate').value,text};if(announcementId)db.announcements=db.announcements.map(a=>a.id===announcementId?x:a);else db.announcements.push(x);save();toast(announcementId?'お知らせを修正しました':'お知らせを登録しました');announcementId=x.id;screen='announcements';render()}
 function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお知らせを削除しますか？'))return;db.announcements=db.announcements.filter(x=>x.id!==id);save();announcementId=null;toast('お知らせを削除しました');screen='announcements';render()}
 
-async function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;localSave();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;localSave();return}toast('出欠を更新しました')}
+async function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;localSave();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;localSave();return}toast('出欠を更新しました');render()}
 async function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};const oldNote=e.attendanceNotes[pid]||'';e.attendanceNotes[pid]=String(note||'').trim();saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);if(!ok){e.attendanceNotes[pid]=oldNote;saveLocalOnly();return}toast('備考を保存しました')}
-async function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;saveLocalOnly();return}toast('自分の出欠を更新しました')}
+async function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;saveLocalOnly();return}toast('自分の出欠を更新しました');render()}
 function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLocalOnly();toast('管理者を設定しました');render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;saveLocalOnly();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');render()}
 
 function selfPlayer(){const isAdminUser=db.currentPlayerId==='admin';const me=db.players.find(p=>p.id===db.currentPlayerId);return `<section class=screen><button class=secondary onclick="screen='home';render()">← メイン画面へ</button><h2>自分の選手を設定</h2><div class=card><h3>👤 この端末を使う人</h3><p class=muted>メイン画面に表示する名前を選択できます。</p><div class=field><label>自分の選手</label><select onchange="setCurrentPlayer(this.value)"><option value="">未設定</option><option value="admin" ${isAdminUser?'selected':''}>管理者</option>${db.players.map(p=>`<option value="${p.id}" ${me?.id===p.id?'selected':''}>${esc(p.name)}（#${esc(p.number)}）</option>`).join('')}</select></div>${isAdminUser?`<div class=notice-box><b>現在の設定</b><br>管理者</div>`:me?`<div class=notice-box><b>現在の設定</b><br>${esc(me.name)}（#${esc(me.number)}）</div>`:`<p class=muted>まだ自分の設定がされていません。</p>`}<button class=secondary onclick="setCurrentPlayer('')">自分の設定を解除</button></div></section>`}
 function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p><p class="muted">クラウド：${cloudReady?'接続済み':'接続確認中'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}</div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存・本番移行</b><p class=muted>現在の端末に保存されているデータをバックアップできます。クラウド版へ移行する際にも使用します。</p>${admin?`<button class=primary onclick="exportAppData()">📦 データをバックアップ</button><label class="secondary" style="display:block;text-align:center;margin-top:8px;cursor:pointer">📥 バックアップを復元<input type="file" accept="application/json,.json" style="display:none" onchange="importAppData(this)"></label><button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
-ensureAnnualSnapshots();
-localSave();
 render();
 cloudInitPromise=cloudInit();
