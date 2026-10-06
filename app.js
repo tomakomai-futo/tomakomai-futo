@@ -1,6 +1,5 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.10.9
+// 苫小牧埠頭野球部 成績管理アプリ v3.10.11
 const KEY='tomakomai_futo_v1';
-// v3.10.9: cloud sync safety fix
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
 if(!db.pitches) db.pitches=[];
@@ -67,6 +66,7 @@ async function changeAdminPassword(){
   adminPwSession=pw;toast('管理者パスワードを変更しました');
 }
 function localSave(){localStorage.setItem(KEY,JSON.stringify(db))}
+function saveLocalOnly(){localSave()}
 function cloudPayload(){const x=JSON.parse(JSON.stringify(db));x.currentPlayerId=null;return x}
 async function cloudSaveAdmin(payload,pw){
   if(!sb||!pw)return false;
@@ -98,10 +98,6 @@ function save(){
       .catch(e=>{console.warn('cloud save queue failed',e);toast('クラウド保存に失敗しました')});
   }
 }
-// v3.10.9: ページ終了時の全データ上書き保存は廃止。
-// 古い端末の状態でクラウドの新しいデータを上書きしないため、
-// クラウド保存は明示的な操作と専用RPCだけで行う。
-function saveLocalOnly(){localSave()}
 async function refreshCloudState(){
   if(!sb)return false;
   try{
@@ -404,6 +400,8 @@ function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお
 async function setAttendance(pid,status){
   if(!admin)return;
   const targetEventId=Number(eventId),targetPlayerId=Number(pid),targetStatus=String(status);
+  if(!targetEventId||!targetPlayerId)return;
+  if(cloudInitPromise){try{await cloudInitPromise}catch(e){}}
   const e=db.events.find(x=>Number(x.id)===targetEventId);
   if(!e)return;
   if(!e.attendance)e.attendance={};
@@ -412,7 +410,9 @@ async function setAttendance(pid,status){
   localSave();
   const ok=await syncAttendanceCloud(targetEventId,targetPlayerId,targetStatus,(e.attendanceNotes||{})[targetPlayerId]||'');
   if(!ok){e.attendance[targetPlayerId]=oldStatus;localSave();return}
-  toast('出欠を更新しました');
+  // 出欠は update_attendance RPC でサーバーへ即時保存済み。
+  // ここで全データを再取得しない（直後の古い読み取り結果で上書きするのを防ぐ）。
+  toast('出欠を報告しました');
   render();
 }
 async function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};const oldNote=e.attendanceNotes[pid]||'';e.attendanceNotes[pid]=String(note||'').trim();saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);if(!ok){e.attendanceNotes[pid]=oldNote;saveLocalOnly();return}toast('備考を保存しました')}
