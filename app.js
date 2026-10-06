@@ -1,5 +1,6 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.10.8
+// 苫小牧埠頭野球部 成績管理アプリ v3.10.9
 const KEY='tomakomai_futo_v1';
+// v3.10.9: cloud sync safety fix
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
 if(!db.pitches) db.pitches=[];
@@ -18,7 +19,6 @@ let cloudReady=false;
 let cloudInitPromise=null;
 let cloudSaveChain=Promise.resolve();
 let attendanceCloudChain=Promise.resolve();
-let cloudBaseSnapshot=null;
 const SUPA = window.TOMAKOMAI_SUPABASE || {};
 const sb = (window.supabase && SUPA.url && SUPA.publishableKey) ? window.supabase.createClient(SUPA.url,SUPA.publishableKey) : null;
 function requireAdmin(){
@@ -68,62 +68,25 @@ async function changeAdminPassword(){
 }
 function localSave(){localStorage.setItem(KEY,JSON.stringify(db))}
 function cloudPayload(){const x=JSON.parse(JSON.stringify(db));x.currentPlayerId=null;return x}
-function sameData(a,b){try{return JSON.stringify(a)===JSON.stringify(b)}catch(e){return false}}
-function mergeCloudData(base,local,remote){
-  if(base===undefined){return local===undefined?remote:local}
-  if(sameData(local,base))return remote;
-  if(sameData(remote,base))return local;
-  if(Array.isArray(local)&&Array.isArray(remote)&&Array.isArray(base)){
-    const hasIds=local.every(x=>x&&typeof x==='object'&&'id' in x)&&remote.every(x=>x&&typeof x==='object'&&'id' in x)&&base.every(x=>x&&typeof x==='object'&&'id' in x);
-    if(hasIds){
-      const bm=new Map(base.map(x=>[String(x.id),x]));
-      const lm=new Map(local.map(x=>[String(x.id),x]));
-      const rm=new Map(remote.map(x=>[String(x.id),x]));
-      const order=[]; remote.forEach(x=>{const k=String(x.id);if(!order.includes(k))order.push(k)}); local.forEach(x=>{const k=String(x.id);if(!order.includes(k))order.push(k)});
-      const out=[];
-      for(const k of order){
-        const b=bm.get(k),l=lm.get(k),r=rm.get(k);
-        if(b!==undefined && l===undefined){
-          if(r!==undefined && sameData(r,b)) continue;
-          if(r!==undefined) out.push(r);
-          continue;
-        }
-        if(b!==undefined && r===undefined){
-          if(l!==undefined && sameData(l,b)) continue;
-          if(l!==undefined) out.push(l);
-          continue;
-        }
-        if(l===undefined){if(r!==undefined)out.push(r);continue}
-        if(r===undefined){out.push(l);continue}
-        out.push(mergeCloudData(b,l,r));
-      }
-      return out;
-    }
-  }
-  if(local&&remote&&base&&typeof local==='object'&&typeof remote==='object'&&typeof base==='object'&&!Array.isArray(local)&&!Array.isArray(remote)&&!Array.isArray(base)){
-    const keys=new Set([...Object.keys(base),...Object.keys(local),...Object.keys(remote)]),out={};
-    for(const k of keys)out[k]=mergeCloudData(base[k],local[k],remote[k]);
-    return out;
-  }
-  return local;
-}
-async function cloudSaveAdmin(pw){
+async function cloudSaveAdmin(payload,pw){
   if(!sb||!pw)return false;
-  if(cloudInitPromise){try{await cloudInitPromise}catch(e){}}
+  if(cloudInitPromise){
+    try{await cloudInitPromise}catch(e){}
+  }
   if(!cloudReady)return false;
   try{
-    const {data:latest,error:loadError}=await sb.from('app_state').select('data').eq('id',1).maybeSingle();
-    if(loadError||!latest?.data){console.warn('cloud latest load failed',loadError);toast('クラウド保存に失敗しました');return false}
-    const localPayload=cloudPayload();
-    const base=cloudBaseSnapshot||latest.data;
-    const merged=mergeCloudData(base,localPayload,latest.data);
-    const {data,error}=await sb.rpc('save_app_state',{p_password:pw,p_data:merged});
-    if(error||data!==true){console.warn('cloud save failed',error||'save_app_state returned false');toast('クラウド保存に失敗しました');return false}
-    cloudBaseSnapshot=JSON.parse(JSON.stringify(merged));
-    const current=db.currentPlayerId||null;
-    db=merged;db.currentPlayerId=current;localSave();
+    const {data,error}=await sb.rpc('save_app_state',{p_password:pw,p_data:payload});
+    if(error || data!==true){
+      console.warn('cloud save failed',error||'save_app_state returned false');
+      toast('クラウド保存に失敗しました');
+      return false;
+    }
     return true;
-  }catch(e){console.warn(e);toast('クラウド保存に失敗しました');return false}
+  }catch(e){
+    console.warn(e);
+    toast('クラウド保存に失敗しました');
+    return false;
+  }
 }
 function save(){
   localSave();
@@ -131,13 +94,13 @@ function save(){
     const pw=adminPwSession;
     cloudSaveChain=cloudSaveChain
       .then(()=>attendanceCloudChain)
-      .then(()=>cloudSaveAdmin(pw))
+      .then(()=>cloudSaveAdmin(cloudPayload(),pw))
       .catch(e=>{console.warn('cloud save queue failed',e);toast('クラウド保存に失敗しました')});
   }
 }
-// 端末を閉じる直前に古い全体データを上書きする処理は行わない。
-// これにより、スマートフォン側の古い状態が最新の出欠・お知らせを消すことを防ぐ。
-function cloudSaveKeepalive(){}
+// v3.10.9: ページ終了時の全データ上書き保存は廃止。
+// 古い端末の状態でクラウドの新しいデータを上書きしないため、
+// クラウド保存は明示的な操作と専用RPCだけで行う。
 function saveLocalOnly(){localSave()}
 async function refreshCloudState(){
   if(!sb)return false;
@@ -147,22 +110,24 @@ async function refreshCloudState(){
     const localCurrent=db.currentPlayerId||null;
     db=data.data;
     db.currentPlayerId=localCurrent;
-    cloudBaseSnapshot=JSON.parse(JSON.stringify(data.data));
     localSave();
     render();
     return true;
   }catch(e){console.warn('cloud refresh failed',e);return false}
 }
-async function syncAttendanceCloud(eventId,playerId,status,note){
+async function syncAttendanceCloud(targetEventId,targetPlayerId,status,note){
   if(!sb)return false;
   if(cloudInitPromise){try{await cloudInitPromise}catch(e){}}
-  if(!cloudReady){
-    try{await cloudInit()}catch(e){}
-  }
-  if(!cloudReady){toast('クラウドに接続できないため出欠を保存できません');return false}
+  if(!cloudReady){try{await cloudInit()}catch(e){}}
+  if(!cloudReady)return false;
   const job=attendanceCloudChain.then(async()=>{
     try{
-      const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
+      const {data,error}=await sb.rpc('update_attendance',{
+        p_event_id:Number(targetEventId),
+        p_player_id:Number(targetPlayerId),
+        p_status:String(status),
+        p_note:String(note||'')
+      });
       if(error||data!==true){
         console.warn('attendance sync failed',error||'update_attendance returned false');
         toast('出欠のクラウド保存に失敗しました');
@@ -187,7 +152,6 @@ async function cloudInit(){
       const localCurrent=db.currentPlayerId||null;
       db=data.data;
       db.currentPlayerId=localCurrent;
-      cloudBaseSnapshot=JSON.parse(JSON.stringify(data.data));
       localSave();
     }
     cloudReady=true;
@@ -439,18 +403,15 @@ function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお
 
 async function setAttendance(pid,status){
   if(!admin)return;
-  let e=db.events.find(x=>x.id===eventId);
+  const targetEventId=Number(eventId),targetPlayerId=Number(pid),targetStatus=String(status);
+  const e=db.events.find(x=>Number(x.id)===targetEventId);
   if(!e)return;
   if(!e.attendance)e.attendance={};
-  const oldStatus=e.attendance[pid]||'未回答';
-  e.attendance[pid]=status;
+  const oldStatus=e.attendance[targetPlayerId]||'未回答';
+  e.attendance[targetPlayerId]=targetStatus;
   localSave();
-  const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');
-  if(!ok){
-    e.attendance[pid]=oldStatus;
-    localSave();
-    return;
-  }
+  const ok=await syncAttendanceCloud(targetEventId,targetPlayerId,targetStatus,(e.attendanceNotes||{})[targetPlayerId]||'');
+  if(!ok){e.attendance[targetPlayerId]=oldStatus;localSave();return}
   toast('出欠を更新しました');
   render();
 }
