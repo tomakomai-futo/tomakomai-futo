@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.10.5
+// 苫小牧埠頭野球部 成績管理アプリ v3.10.7
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -153,21 +153,30 @@ async function refreshCloudState(){
     return true;
   }catch(e){console.warn('cloud refresh failed',e);return false}
 }
-function syncAttendanceCloud(eventId,playerId,status,note){
-  if(!sb||!cloudReady)return Promise.resolve(false);
+async function syncAttendanceCloud(eventId,playerId,status,note){
+  if(!sb)return false;
+  if(cloudInitPromise){try{await cloudInitPromise}catch(e){}}
+  if(!cloudReady){
+    try{await cloudInit()}catch(e){}
+  }
+  if(!cloudReady){toast('クラウドに接続できないため出欠を保存できません');return false}
   attendanceCloudChain=attendanceCloudChain.then(async()=>{
     try{
       const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
-      if(error||data!==true){console.warn('attendance sync failed',error||'update_attendance returned false');toast('出欠のクラウド保存に失敗しました');return false}
-      // RPC成功だけで完了扱いにせず、直後にクラウドの実データを読み戻して保存結果を確認する。
-      const {data:latest,error:readError}=await sb.from('app_state').select('data').eq('id',1).maybeSingle();
-      if(readError||!latest?.data){console.warn('attendance readback failed',readError);toast('出欠の保存確認に失敗しました');return false}
-      const ev=(latest.data.events||[]).find(x=>String(x.id)===String(eventId));
-      const saved=String(ev?.attendance?.[playerId]||'未回答')===String(status);
-      if(!saved){console.warn('attendance readback mismatch',{eventId,playerId,status,saved:ev?.attendance?.[playerId]});toast('出欠がクラウドに反映されていません');return false}
-      cloudBaseSnapshot=JSON.parse(JSON.stringify(latest.data));
+      if(error||data!==true){
+        console.warn('attendance sync failed',error||'update_attendance returned false');
+        toast('出欠のクラウド保存に失敗しました');
+        return false;
+      }
+      // update_attendance はSupabase側で更新が完了してから true を返すため、
+      // 直後のGETによる読み戻し判定は行わない。GETのキャッシュ等で古い値を
+      // 読んで「保存失敗」と誤判定し、端末側の変更を戻してしまうのを防ぐ。
       return true;
-    }catch(e){console.warn(e);toast('出欠のクラウド保存に失敗しました');return false}
+    }catch(e){
+      console.warn(e);
+      toast('出欠のクラウド保存に失敗しました');
+      return false;
+    }
   });
   return attendanceCloudChain;
 }
