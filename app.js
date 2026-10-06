@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.10.7
+// 苫小牧埠頭野球部 成績管理アプリ v3.10.8
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -160,7 +160,7 @@ async function syncAttendanceCloud(eventId,playerId,status,note){
     try{await cloudInit()}catch(e){}
   }
   if(!cloudReady){toast('クラウドに接続できないため出欠を保存できません');return false}
-  attendanceCloudChain=attendanceCloudChain.then(async()=>{
+  const job=attendanceCloudChain.then(async()=>{
     try{
       const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
       if(error||data!==true){
@@ -168,17 +168,15 @@ async function syncAttendanceCloud(eventId,playerId,status,note){
         toast('出欠のクラウド保存に失敗しました');
         return false;
       }
-      // update_attendance はSupabase側で更新が完了してから true を返すため、
-      // 直後のGETによる読み戻し判定は行わない。GETのキャッシュ等で古い値を
-      // 読んで「保存失敗」と誤判定し、端末側の変更を戻してしまうのを防ぐ。
       return true;
     }catch(e){
-      console.warn(e);
+      console.warn('attendance sync exception',e);
       toast('出欠のクラウド保存に失敗しました');
       return false;
     }
   });
-  return attendanceCloudChain;
+  attendanceCloudChain=job.catch(()=>false);
+  return job;
 }
 async function cloudInit(){
   if(!sb){console.warn('Supabase config missing');return}
@@ -439,7 +437,23 @@ function announcementForm(){const x=db.announcements.find(a=>a.id===announcement
 function saveAnnouncement(){if(!requireAdmin())return;const text=document.getElementById('atext').value.trim();if(!text)return toast('お知らせ内容を入力してください');const x={id:announcementId||Date.now(),date:document.getElementById('adate').value,text};if(announcementId)db.announcements=db.announcements.map(a=>a.id===announcementId?x:a);else db.announcements.push(x);save();toast(announcementId?'お知らせを修正しました':'お知らせを登録しました');announcementId=x.id;screen='announcements';render()}
 function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお知らせを削除しますか？'))return;db.announcements=db.announcements.filter(x=>x.id!==id);save();announcementId=null;toast('お知らせを削除しました');screen='announcements';render()}
 
-async function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;localSave();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;localSave();return}toast('出欠を更新しました');render()}
+async function setAttendance(pid,status){
+  if(!admin)return;
+  let e=db.events.find(x=>x.id===eventId);
+  if(!e)return;
+  if(!e.attendance)e.attendance={};
+  const oldStatus=e.attendance[pid]||'未回答';
+  e.attendance[pid]=status;
+  localSave();
+  const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');
+  if(!ok){
+    e.attendance[pid]=oldStatus;
+    localSave();
+    return;
+  }
+  toast('出欠を更新しました');
+  render();
+}
 async function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};const oldNote=e.attendanceNotes[pid]||'';e.attendanceNotes[pid]=String(note||'').trim();saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);if(!ok){e.attendanceNotes[pid]=oldNote;saveLocalOnly();return}toast('備考を保存しました')}
 async function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;saveLocalOnly();return}toast('自分の出欠を更新しました');render()}
 function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLocalOnly();toast('管理者を設定しました');render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;saveLocalOnly();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');render()}
