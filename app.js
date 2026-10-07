@@ -17,6 +17,7 @@ let adminPwSession='';
 let cloudReady=false;
 let cloudInitPromise=null;
 let cloudSaveChain=Promise.resolve();
+let cloudRefreshInFlight=false;
 const SUPA = window.TOMAKOMAI_SUPABASE || {};
 const sb = (window.supabase && SUPA.url && SUPA.publishableKey) ? window.supabase.createClient(SUPA.url,SUPA.publishableKey) : null;
 function requireAdmin(){
@@ -98,7 +99,8 @@ function save(){
 }
 function saveLocalOnly(){localSave()}
 async function refreshCloudState(){
-  if(!sb)return false;
+  if(!sb||cloudRefreshInFlight)return false;
+  cloudRefreshInFlight=true;
   try{
     const {data,error}=await sb.from('app_state').select('data').eq('id',1).maybeSingle();
     if(error||!data?.data)return false;
@@ -109,6 +111,7 @@ async function refreshCloudState(){
     render();
     return true;
   }catch(e){console.warn('cloud refresh failed',e);return false}
+  finally{cloudRefreshInFlight=false}
 }
 async function syncAttendanceCloud(eventId,playerId,status,note){
   if(!sb||!cloudReady)return false;
@@ -119,7 +122,6 @@ async function syncAttendanceCloud(eventId,playerId,status,note){
       toast('出欠のクラウド保存に失敗しました');
       return false;
     }
-    // 出欠は専用RPCだけで即時保存する。ここで全体データを再取得しない。
     return true;
   }catch(e){console.warn(e);toast('出欠のクラウド保存に失敗しました');return false}
 }
@@ -173,7 +175,9 @@ function toast(x){let e=document.getElementById('toast');e.textContent=x;e.class
 function applyChampionshipPhoto(){const photo=localStorage.getItem("tomakomai_futo_championship_photo");document.documentElement.style.setProperty("--championship-photo",photo?`url("${photo}")`:'url("championship.jpg")');}
 function setChampionshipPhoto(input){const f=input?.files?.[0];if(!f)return;if(!f.type.startsWith("image/"))return toast("画像ファイルを選択してください");const r=new FileReader();r.onload=()=>{localStorage.setItem("tomakomai_futo_championship_photo",r.result);applyChampionshipPhoto();toast("優勝集合写真を設定しました");render()};r.readAsDataURL(f)}
 function clearChampionshipPhoto(){localStorage.removeItem("tomakomai_futo_championship_photo");applyChampionshipPhoto();toast("優勝集合写真を削除しました");render()}
-function render(){applyChampionshipPhoto();let a=document.getElementById('app');({home:()=>a.innerHTML=home(),games:()=>a.innerHTML=games(),game:()=>a.innerHTML=gameForm(),players:()=>a.innerHTML=players(),player:()=>a.innerHTML=playerForm(),batting:()=>a.innerHTML=batting(),atbats:()=>a.innerHTML=atbats(),pitching:()=>a.innerHTML=pitching(),pitches:()=>a.innerHTML=pitches(),stats:()=>a.innerHTML=stats(),annual2026:()=>a.innerHTML=annual2026(),calendar:()=>a.innerHTML=calendar(),event:()=>a.innerHTML=eventForm(),settings:()=>a.innerHTML=settings(),selfplayer:()=>a.innerHTML=selfPlayer(),announcements:()=>a.innerHTML=announcements(),announcement:()=>a.innerHTML=announcementForm()})[screen]()}
+function render(){applyChampionshipPhoto();let a=document.getElementById('app');({home:()=>a.innerHTML=home(),games:()=>a.innerHTML=games(),game:()=>a.innerHTML=gameForm(),players:()=>a.innerHTML=players(),player:()=>a.innerHTML=playerForm(),batting:()=>a.innerHTML=batting(),atbats:()=>a.innerHTML=atbats(),pitching:()=>a.innerHTML=pitching(),pitches:()=>a.innerHTML=pitches(),stats:()=>a.innerHTML=stats(),annual2026:()=>a.innerHTML=annual2026(),calendar:()=>a.innerHTML=calendar(),event:()=>a.innerHTML=eventForm(),settings:()=>a.innerHTML=settings(),selfplayer:()=>a.innerHTML=selfPlayer(),announcements:()=>a.innerHTML=announcements(),announcement:()=>a.innerHTML=announcementForm()})[screen]();
+  if((screen==='calendar'||screen==='event')&&sb&&cloudReady&&!cloudRefreshInFlight) refreshCloudState();
+}
 function home(){
   const years=[...new Set([
     new Date().getFullYear(),
@@ -381,12 +385,13 @@ function announcementForm(){const x=db.announcements.find(a=>a.id===announcement
 function saveAnnouncement(){if(!requireAdmin())return;const text=document.getElementById('atext').value.trim();if(!text)return toast('お知らせ内容を入力してください');const x={id:announcementId||Date.now(),date:document.getElementById('adate').value,text};if(announcementId)db.announcements=db.announcements.map(a=>a.id===announcementId?x:a);else db.announcements.push(x);save();toast(announcementId?'お知らせを修正しました':'お知らせを登録しました');announcementId=x.id;screen='announcements';render()}
 function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお知らせを削除しますか？'))return;db.announcements=db.announcements.filter(x=>x.id!==id);save();announcementId=null;toast('お知らせを削除しました');screen='announcements';render()}
 
-async function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;localSave();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;localSave();return}render();toast('出欠を更新しました')}
-async function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};const oldNote=e.attendanceNotes[pid]||'';e.attendanceNotes[pid]=String(note||'').trim();saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);if(!ok){e.attendanceNotes[pid]=oldNote;saveLocalOnly();return}render();toast('備考を保存しました')}
-async function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;saveLocalOnly();return}render();toast('自分の出欠を更新しました')}
-function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLocalOnly();toast('管理者を設定しました');render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;saveLocalOnly();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');render()}
+async function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;localSave();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;localSave();render();return}toast('出欠を更新しました');render()}
+async function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};const oldNote=e.attendanceNotes[pid]||'';e.attendanceNotes[pid]=String(note||'').trim();saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);if(!ok){e.attendanceNotes[pid]=oldNote;saveLocalOnly();render();return}toast('備考を保存しました');render()}
+async function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;saveLocalOnly();render();return}toast('自分の出欠を更新しました');render()}
+async function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLocalOnly();toast('管理者を設定しました');if(sb&&cloudReady)await refreshCloudState();else render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;saveLocalOnly();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');if(sb&&cloudReady)await refreshCloudState();else render()}
 
 function selfPlayer(){const isAdminUser=db.currentPlayerId==='admin';const me=db.players.find(p=>p.id===db.currentPlayerId);return `<section class=screen><button class=secondary onclick="screen='home';render()">← メイン画面へ</button><h2>自分の選手を設定</h2><div class=card><h3>👤 この端末を使う人</h3><p class=muted>メイン画面に表示する名前を選択できます。</p><div class=field><label>自分の選手</label><select onchange="setCurrentPlayer(this.value)"><option value="">未設定</option><option value="admin" ${isAdminUser?'selected':''}>管理者</option>${db.players.map(p=>`<option value="${p.id}" ${me?.id===p.id?'selected':''}>${esc(p.name)}（#${esc(p.number)}）</option>`).join('')}</select></div>${isAdminUser?`<div class=notice-box><b>現在の設定</b><br>管理者</div>`:me?`<div class=notice-box><b>現在の設定</b><br>${esc(me.name)}（#${esc(me.number)}）</div>`:`<p class=muted>まだ自分の設定がされていません。</p>`}<button class=secondary onclick="setCurrentPlayer('')">自分の設定を解除</button></div></section>`}
 function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p><p class="muted">クラウド：${cloudReady?'接続済み':'接続確認中'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}</div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存・本番移行</b><p class=muted>現在の端末に保存されているデータをバックアップできます。クラウド版へ移行する際にも使用します。</p>${admin?`<button class=primary onclick="exportAppData()">📦 データをバックアップ</button><label class="secondary" style="display:block;text-align:center;margin-top:8px;cursor:pointer">📥 バックアップを復元<input type="file" accept="application/json,.json" style="display:none" onchange="importAppData(this)"></label><button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&sb&&cloudReady&&!cloudRefreshInFlight)refreshCloudState()});
 render();
 cloudInitPromise=cloudInit();
