@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.10.3
+// 苫小牧埠頭野球部 成績管理アプリ v3.10.13
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -17,6 +17,7 @@ let adminPwSession='';
 let cloudReady=false;
 let cloudInitPromise=null;
 let cloudSaveChain=Promise.resolve();
+let attendanceCloudChain=Promise.resolve();
 const SUPA = window.TOMAKOMAI_SUPABASE || {};
 const sb = (window.supabase && SUPA.url && SUPA.publishableKey) ? window.supabase.createClient(SUPA.url,SUPA.publishableKey) : null;
 function requireAdmin(){
@@ -64,17 +65,6 @@ async function changeAdminPassword(){
   }catch(e){toast('パスワード変更に失敗しました');return;}
   adminPwSession=pw;toast('管理者パスワードを変更しました');
 }
-function setAppIcon(){
-  const svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#1f6b3a"/><path d="M20 86c18-4 28-16 44-42 10 16 18 27 44 42" fill="none" stroke="#c58a4a" stroke-width="12" stroke-linecap="round"/><circle cx="64" cy="44" r="18" fill="#fff" stroke="#b45b38" stroke-width="5"/><path d="M53 38c7 8 15 8 22 0M50 47c9 8 19 8 28 0" fill="none" stroke="#b45b38" stroke-width="3"/></svg>';
-  const href='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg);
-  let link=document.querySelector('link[data-tomakomai-icon]');
-  if(!link){link=document.createElement('link');link.rel='icon';link.setAttribute('data-tomakomai-icon','1');document.head.appendChild(link)}
-  link.href=href;
-  let apple=document.querySelector('link[data-tomakomai-apple-icon]');
-  if(!apple){apple=document.createElement('link');apple.rel='apple-touch-icon';apple.setAttribute('data-tomakomai-apple-icon','1');document.head.appendChild(apple)}
-  apple.href=href;
-}
-setAppIcon();
 function localSave(){localStorage.setItem(KEY,JSON.stringify(db))}
 function cloudPayload(){const x=JSON.parse(JSON.stringify(db));x.currentPlayerId=null;return x}
 async function cloudSaveAdmin(payload,pw){
@@ -100,10 +90,10 @@ async function cloudSaveAdmin(payload,pw){
 function save(){
   localSave();
   if(admin&&adminPwSession){
-    const payload=cloudPayload();
     const pw=adminPwSession;
     cloudSaveChain=cloudSaveChain
-      .then(()=>cloudSaveAdmin(payload,pw))
+      .then(()=>attendanceCloudChain)
+      .then(()=>cloudSaveAdmin(cloudPayload(),pw))
       .catch(e=>{console.warn('cloud save queue failed',e);toast('クラウド保存に失敗しました')});
   }
 }
@@ -121,17 +111,20 @@ async function refreshCloudState(){
     return true;
   }catch(e){console.warn('cloud refresh failed',e);return false}
 }
-async function syncAttendanceCloud(eventId,playerId,status,note){
-  if(!sb||!cloudReady)return false;
-  try{
-    const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
-    if(error||data!==true){
-      console.warn('attendance sync failed',error||'update_attendance returned false');
-      toast('出欠のクラウド保存に失敗しました');
-      return false;
-    }
-    return true;
-  }catch(e){console.warn(e);toast('出欠のクラウド保存に失敗しました');return false}
+function syncAttendanceCloud(eventId,playerId,status,note){
+  if(!sb||!cloudReady)return Promise.resolve(false);
+  attendanceCloudChain=attendanceCloudChain.then(async()=>{
+    try{
+      const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
+      if(error||data!==true){
+        console.warn('attendance sync failed',error||'update_attendance returned false');
+        toast('出欠のクラウド保存に失敗しました');
+        return false;
+      }
+      return true;
+    }catch(e){console.warn(e);toast('出欠のクラウド保存に失敗しました');return false}
+  });
+  return attendanceCloudChain;
 }
 async function cloudInit(){
   if(!sb){console.warn('Supabase config missing');return}
@@ -245,7 +238,7 @@ function deleteGame(id){if(!requireAdmin())return;let g=db.games.find(x=>x.id===
 function gameForm(){let g=db.games.find(x=>x.id===gameId);let edit=!!g;return `<section class=screen><button class=secondary onclick="screen='games';render()">← 戻る</button><h2>${edit?'試合を修正':'試合を登録'}</h2><div class=card><div class=field><label>試合区分</label><select id=gtype><option value="公式戦" ${g?.type==='公式戦'?'selected':''}>公式戦</option><option value="練習試合" ${g?.type==='練習試合'?'selected':''}>練習試合</option></select></div><div class=field><label>年度</label><select id=gyear ${admin?'':'disabled'}>${Array.from({length:7},(_,i)=>new Date().getFullYear()+2-i).map(y=>`<option value="${y}" ${String(g?.year||((g?.date||new Date().toISOString().slice(0,10)).slice(0,4)))===String(y)?'selected':''}>${y}年度</option>`).join('')}</select></div><div class=field><label>日付</label><input id=gdate ${admin?'':'disabled'} type=date value="${g?.date||new Date().toISOString().slice(0,10)}"></div><div class=field><label>大会・イベント名</label><input id=gtournament ${admin?'':'disabled'} placeholder="例：支部A級大会" value="${esc(g?.tournament||'')}"></div><div class=field><label>球場</label><input id=gvenue ${admin?'':'disabled'} placeholder="例：とましんスタジアム" value="${esc(g?.venue||'')}"></div><div class=field><label>相手チーム</label><input id=gopp ${admin?'':'disabled'} placeholder="相手チーム名" value="${esc(g?.opponent||'')}"></div><div class=field><label>結果</label><select id=gresult><option ${g?.result==='勝'?'selected':''}>勝</option><option ${g?.result==='負'?'selected':''}>負</option><option ${g?.result==='引分'?'selected':''}>引分</option><option ${g?.result==='不戦勝'?'selected':''}>不戦勝</option><option ${g?.result==='不戦敗'?'selected':''}>不戦敗</option></select></div><div class=row><div class=field><label>得点</label><input id=gruns ${admin?'':'disabled'} type=number min=0 value="${g?.runs??0}"></div><div class=field><label>失点</label><input id=gagainst ${admin?'':'disabled'} type=number min=0 value="${g?.against??0}"></div></div>${admin?`<button class=primary onclick="saveGame()">${edit?'この試合を修正':'この試合を登録'}</button>`:`<p class=muted>閲覧モード：試合データの変更は管理者のみ可能です。</p>`}${edit&&admin?`<button class=secondary onclick="if(confirm('この試合を削除しますか？打席・投球記録も削除されます。')){db.games=db.games.filter(x=>x.id!==gameId);db.atBats=db.atBats.filter(x=>x.gameId!==gameId);db.pitches=db.pitches.filter(x=>x.gameId!==gameId);save();gameId=null;screen='games';toast('試合を削除しました');render()}">この試合を削除</button>`:''}</div></section>`}
 function saveGame(){if(!requireAdmin())return;let g={id:gameId||Date.now(),year:+document.getElementById('gyear').value,type:document.getElementById('gtype').value,date:document.getElementById('gdate').value,tournament:document.getElementById('gtournament').value.trim(),venue:document.getElementById('gvenue').value.trim(),opponent:document.getElementById('gopp').value.trim(),result:document.getElementById('gresult').value,runs:+document.getElementById('gruns').value,against:+document.getElementById('gagainst').value};let edit=!!db.games.find(x=>x.id===g.id);if(edit){db.games=db.games.map(x=>x.id===g.id?g:x);toast('試合を修正しました')}else{db.games.push(g);toast('試合を登録しました')}save();gameId=g.id;screen='atbats';render()}
 function players(){const list=db.players.slice().sort((a,b)=>{const na=Number(a.number),nb=Number(b.number);const rank=n=>n===30?0:n===10?1:2;return rank(na)-rank(nb)||na-nb||String(a.name).localeCompare(String(b.name),'ja')});return `<section class=screen><div class=row><div><h2>選手一覧</h2></div>${admin?`<button class=primary onclick="screen='player';playerId=null;render()">＋ 選手を登録</button>`:''}</div>${list.map(p=>`<div class=item><div class=row><div><span class=badge>背番号 ${esc(p.number)}</span><span class=position-badge>${esc(p.position||'未設定')}</span><h3>${esc(p.name)}</h3></div><div class=row>${admin?`<button class=secondary onclick="playerId=${p.id};screen='player';render()">修正</button><button class=secondary onclick="deletePlayer(${p.id})">削除</button>`:''}</div></div></div>`).join('')}</section>`}
-function deletePlayer(id){if(!requireAdmin())return;let p=db.players.find(x=>x.id===id);if(!p)return;if(!confirm(`${p.name}（背番号${p.number}）を削除しますか？\n登録済みの打席・投球記録も削除されます。`))return;db.players=db.players.filter(x=>x.id!==id);db.atBats=db.atBats.filter(x=>x.playerId!==id);db.pitches=db.pitches.filter(x=>x.playerId!==id);save();toast('選手を削除しました');render()}
+function deletePlayer(id){if(!requireAdmin())return;let p=db.players.find(x=>x.id===id);if(!p)return;if(!confirm(`${p.name}（背番号${p.number}）を現役選手一覧から外しますか？\n過去の打席・投球記録と年度確定成績は保持されます。`))return;db.players=db.players.filter(x=>x.id!==id);save();toast('選手を現役一覧から外しました（過去成績は保持）');render()}
 function playerForm(){let p=db.players.find(x=>x.id===playerId);let edit=!!p;return `<section class=screen><button class=secondary onclick="screen='players';render()">← 戻る</button><h2>${edit?'選手情報を修正':'選手を登録'}</h2><div class=card><div class=field><label>背番号</label><input id=pnum ${admin?'':'disabled'} type=number min=0 value="${esc(p?.number||'')}"></div><div class=field><label>氏名</label><input id=pname ${admin?'':'disabled'} placeholder="例：佐藤 太郎" value="${esc(p?.name||'')}"></div><div class=field><label>ポジション区分</label><select id=pposition ${admin?'':'disabled'}><option value="" ${!p?.position?'selected':''}>未設定</option><option value="投手" ${p?.position==='投手'?'selected':''}>投手</option><option value="捕手" ${p?.position==='捕手'?'selected':''}>捕手</option><option value="内野手" ${p?.position==='内野手'?'selected':''}>内野手</option><option value="外野手" ${p?.position==='外野手'?'selected':''}>外野手</option></select></div>${admin?`<button class=primary onclick="savePlayer()">${edit?'この選手を修正':'登録する'}</button>`:`<p class=muted>閲覧モード：選手情報の変更は管理者のみ可能です。</p>`}</div></section>`}
 function savePlayer(){if(!requireAdmin())return;let name=document.getElementById('pname').value.trim();let number=document.getElementById('pnum').value;let position=document.getElementById('pposition').value;if(!name)return toast('氏名を入力してください');if(playerId){db.players=db.players.map(p=>p.id===playerId?{...p,name,number,position}:p);toast('選手情報を修正しました')}else{db.players.push({id:Date.now(),name,number,position});toast('選手を登録しました')}save();screen='players';render()}
 function resetBat(){bat={result:null,detail:null,pos:null,rbi:0,runs:0,steals:0,cs:0};batEditId=null}
@@ -379,7 +372,7 @@ function eventForm(){
  <div class=field><label>場所</label><input id=evenue ${admin?'':'disabled'} value="${esc(e?.venue||'')}" placeholder="例：清水球場"></div>
  <div class=field><label>その他（特記事項）</label><textarea id=enote ${admin?'':'disabled'} rows=4 placeholder="連絡事項・集合時間・持ち物など">${esc(e?.note||'')}</textarea></div>
  ${admin?`<button class=primary onclick="saveEvent()">${edit?'この予定を修正':'この予定を登録'}</button>${edit?`<button class=secondary onclick="if(confirm('この予定を削除しますか？')){db.events=db.events.filter(x=>x.id!==eventId);save();eventId=null;screen='calendar';toast('予定を削除しました');render()}">この予定を削除</button>`:''}`:`<p class=muted>予定の登録・変更・削除は管理者のみできます。</p>`}</div>
- ${edit?`<div class="card"><h3>出欠</h3><p class="muted">選手ごとに出欠を直接変更できます。変更はすぐクラウドに保存されます。</p>${db.players.map(p=>`<div class="row attendance"><span><b>${esc(p.name)}</b> <small>#${esc(p.number)}</small></span><select onchange="setAttendance(${p.id},this.value)">${statusOptions.map(x=>`<option ${((att[p.id]||'未回答')===x)?'selected':''}>${x}</option>`).join('')}</select></div><div class="field" style="margin-bottom:10px"><input value="${esc((e?.attendanceNotes||{})[p.id]||'')}" placeholder="備考（任意）" onchange="setAttendanceNote(${p.id},this.value)"></div>`).join('')}</div>`:''}</section>`;
+ ${edit?`<div class=card><h3>出欠</h3><p class=muted>選手ごとに出欠を変更できます。変更はクラウドへ即時保存されます。</p>${db.players.map(p=>{const ps=att[p.id]||'未回答',note=(e?.attendanceNotes||{})[p.id]||'';return `<div class="row attendance"><span><b>${esc(p.name)}</b> <small>#${esc(p.number)}</small></span><select onchange="setAttendance(${p.id},this.value)">${statusOptions.map(x=>`<option ${ps===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><input value="${esc(note)}" placeholder="備考（任意）" onchange="setAttendanceNote(${p.id},this.value)"></div>`}).join('')}</div>`:''}</section>`;
 }
 function saveEvent(){let old=db.events.find(x=>x.id===eventId);let e={id:eventId||Date.now(),kind:document.getElementById('ekind').value,date:document.getElementById('edate').value,time:document.getElementById('etime').value,venue:document.getElementById('evenue').value.trim(),note:document.getElementById('enote').value.trim(),attendance:old?.attendance||{},attendanceNotes:old?.attendanceNotes||{}};if(old)db.events=db.events.map(x=>x.id===e.id?e:x);else db.events.push(e);save();eventId=e.id;toast(old?'予定を修正しました':'予定を登録しました');render()}
 
@@ -389,30 +382,24 @@ function saveAnnouncement(){if(!requireAdmin())return;const text=document.getEle
 function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお知らせを削除しますか？'))return;db.announcements=db.announcements.filter(x=>x.id!==id);save();announcementId=null;toast('お知らせを削除しました');screen='announcements';render()}
 
 async function setAttendance(pid,status){
-  const e=db.events.find(x=>x.id===eventId);
-  if(!e||!db.players.some(p=>p.id===pid)||!['参加','欠席','未回答'].includes(status))return;
-  if(!e.attendance)e.attendance={};
-  const oldStatus=e.attendance[pid]||'未回答';
-  e.attendance[pid]=status;
-  localSave();
-  const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');
-  if(!ok){e.attendance[pid]=oldStatus;localSave();render();return}
-  toast('出欠を更新しました');
-  render();
+ const e=db.events.find(x=>x.id===eventId);
+ if(!e||!db.players.some(p=>p.id===+pid))return;
+ const allowed=['参加','欠席','未回答']; if(!allowed.includes(status))return;
+ if(!e.attendance)e.attendance={};
+ const oldStatus=e.attendance[pid]||'未回答'; e.attendance[pid]=status; localSave();
+ const ok=await syncAttendanceCloud(eventId,+pid,status,(e.attendanceNotes||{})[pid]||'');
+ if(!ok){e.attendance[pid]=oldStatus;localSave();render();return}
+ toast('出欠を保存しました'); render();
 }
 async function setAttendanceNote(pid,note){
-  const e=db.events.find(x=>x.id===eventId);
-  if(!e||!db.players.some(p=>p.id===pid))return;
-  if(!e.attendanceNotes)e.attendanceNotes={};
-  const oldNote=e.attendanceNotes[pid]||'';
-  e.attendanceNotes[pid]=String(note||'').trim();
-  localSave();
-  const ok=await syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);
-  if(!ok){e.attendanceNotes[pid]=oldNote;localSave();render();return}
-  toast('備考を保存しました');
-  render();
+ const e=db.events.find(x=>x.id===eventId);
+ if(!e||!db.players.some(p=>p.id===+pid))return;
+ if(!e.attendanceNotes)e.attendanceNotes={};
+ const oldNote=e.attendanceNotes[pid]||''; e.attendanceNotes[pid]=String(note||'').trim(); localSave();
+ const ok=await syncAttendanceCloud(eventId,+pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);
+ if(!ok){e.attendanceNotes[pid]=oldNote;localSave();render();return}
+ toast('備考を保存しました');
 }
-
 function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p><p class="muted">クラウド：${cloudReady?'接続済み':'接続確認中'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}</div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存・本番移行</b><p class=muted>現在の端末に保存されているデータをバックアップできます。クラウド版へ移行する際にも使用します。</p>${admin?`<button class=primary onclick="exportAppData()">📦 データをバックアップ</button><label class="secondary" style="display:block;text-align:center;margin-top:8px;cursor:pointer">📥 バックアップを復元<input type="file" accept="application/json,.json" style="display:none" onchange="importAppData(this)"></label><button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
 render();
 cloudInitPromise=cloudInit();
