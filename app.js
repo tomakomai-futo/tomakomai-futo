@@ -1,4 +1,4 @@
-// 苫小牧埠頭野球部 成績管理アプリ v3.10.13
+// 苫小牧埠頭野球部 成績管理アプリ v4.0 - latest-input-wins persistence
 const KEY='tomakomai_futo_v1';
 let db=JSON.parse(localStorage.getItem(KEY)||'null')||{players:[],games:[],atBats:[],pitches:[],events:[],announcements:[]};
 if(!db.atBats) db.atBats=[];
@@ -65,82 +65,28 @@ async function changeAdminPassword(){
   }catch(e){toast('パスワード変更に失敗しました');return;}
   adminPwSession=pw;toast('管理者パスワードを変更しました');
 }
-function localSave(){localStorage.setItem(KEY,JSON.stringify(db))}
+// ===== 永続保存 v4: 入力した瞬間を正として扱う =====
+const PERSIST_VERSION='4.0';
+const PERSIST_META='__persist';
+let persistDeviceId=localStorage.getItem('tomakomai_futo_device_id');
+if(!persistDeviceId){persistDeviceId=(crypto.randomUUID?crypto.randomUUID():('d'+Date.now()+Math.random().toString(36).slice(2)));localStorage.setItem('tomakomai_futo_device_id',persistDeviceId)}
+let cloudSavePending=false;
+function ensurePersistMeta(){if(!db||typeof db!=='object')return;const m=(db[PERSIST_META]&&typeof db[PERSIST_META]==='object')?db[PERSIST_META]:{};db[PERSIST_META]={version:PERSIST_VERSION,updatedAt:Number(m.updatedAt)||0,revision:Number(m.revision)||0,deviceId:m.deviceId||persistDeviceId}}
+ensurePersistMeta();
+function markLocalChange(){ensurePersistMeta();const now=Date.now();db[PERSIST_META].updatedAt=Math.max(Number(db[PERSIST_META].updatedAt)||0,now);db[PERSIST_META].revision=(Number(db[PERSIST_META].revision)||0)+1;db[PERSIST_META].deviceId=persistDeviceId}
+function persistMeta(x){return x&&typeof x==='object'&&x[PERSIST_META]&&Number(x[PERSIST_META].updatedAt)>0?x[PERSIST_META]:null}
+function localSave(){ensurePersistMeta();localStorage.setItem(KEY,JSON.stringify(db));localStorage.setItem(KEY+'_last_saved_at',String(db[PERSIST_META].updatedAt||Date.now()))}
+function saveLocalOnly(){markLocalChange();localSave()}
 function cloudPayload(){const x=JSON.parse(JSON.stringify(db));x.currentPlayerId=null;return x}
-async function cloudSaveAdmin(payload,pw){
-  if(!sb||!pw)return false;
-  if(cloudInitPromise){
-    try{await cloudInitPromise}catch(e){}
-  }
-  if(!cloudReady)return false;
-  try{
-    const {data,error}=await sb.rpc('save_app_state',{p_password:pw,p_data:payload});
-    if(error || data!==true){
-      console.warn('cloud save failed',error||'save_app_state returned false');
-      toast('クラウド保存に失敗しました');
-      return false;
-    }
-    return true;
-  }catch(e){
-    console.warn(e);
-    toast('クラウド保存に失敗しました');
-    return false;
-  }
-}
-function save(){
-  localSave();
-  if(admin&&adminPwSession){
-    const pw=adminPwSession;
-    cloudSaveChain=cloudSaveChain
-      .then(()=>attendanceCloudChain)
-      .then(()=>cloudSaveAdmin(cloudPayload(),pw))
-      .catch(e=>{console.warn('cloud save queue failed',e);toast('クラウド保存に失敗しました')});
-  }
-}
-function saveLocalOnly(){localSave()}
-async function refreshCloudState(){
-  if(!sb)return false;
-  try{
-    const {data,error}=await sb.from('app_state').select('data').eq('id',1).maybeSingle();
-    if(error||!data?.data)return false;
-    const localCurrent=db.currentPlayerId||null;
-    db=data.data;
-    db.currentPlayerId=localCurrent;
-    localSave();
-    render();
-    return true;
-  }catch(e){console.warn('cloud refresh failed',e);return false}
-}
-function syncAttendanceCloud(eventId,playerId,status,note){
-  if(!sb||!cloudReady)return Promise.resolve(false);
-  attendanceCloudChain=attendanceCloudChain.then(async()=>{
-    try{
-      const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});
-      if(error||data!==true){
-        console.warn('attendance sync failed',error||'update_attendance returned false');
-        toast('出欠のクラウド保存に失敗しました');
-        return false;
-      }
-      return true;
-    }catch(e){console.warn(e);toast('出欠のクラウド保存に失敗しました');return false}
-  });
-  return attendanceCloudChain;
-}
-async function cloudInit(){
-  if(!sb){console.warn('Supabase config missing');return}
-  try{
-    const {data,error}=await sb.from('app_state').select('data').eq('id',1).maybeSingle();
-    if(error){console.warn('cloud load failed',error);return}
-    if(data?.data){
-      const localCurrent=db.currentPlayerId||null;
-      db=data.data;
-      db.currentPlayerId=localCurrent;
-      localSave();
-    }
-    cloudReady=true;
-    render();
-  }catch(e){console.warn(e)}
-}
+function adoptCloudData(cloudData){if(!cloudData||typeof cloudData!=='object')return false;const localCurrent=db.currentPlayerId||null;db=JSON.parse(JSON.stringify(cloudData));db.currentPlayerId=localCurrent;ensurePersistMeta();localSave();return true}
+async function cloudRead(){if(!sb)return null;try{const {data,error}=await sb.from('app_state').select('data').eq('id',1).maybeSingle();if(error){console.warn('cloud load failed',error);return null}return data?.data||null}catch(e){console.warn('cloud load failed',e);return null}}
+async function cloudSaveAdmin(payload,pw){if(!sb||!pw)return false;if(cloudInitPromise){try{await cloudInitPromise}catch(e){}}if(!cloudReady)return false;try{const remote=await cloudRead();const lm=persistMeta(payload),rm=persistMeta(remote);if(rm&&lm&&Number(rm.updatedAt)>Number(lm.updatedAt)){console.warn('stale cloud save prevented');return false}const {data,error}=await sb.rpc('save_app_state',{p_password:pw,p_data:payload});if(error||data!==true){console.warn('cloud save failed',error||'save_app_state returned false');toast('クラウド保存に失敗しました。端末には保存されています');return false}cloudSavePending=false;return true}catch(e){console.warn(e);toast('クラウド保存に失敗しました。端末には保存されています');return false}}
+function save(){markLocalChange();localSave();if(admin&&adminPwSession){const payload=cloudPayload(),pw=adminPwSession;cloudSavePending=true;cloudSaveChain=cloudSaveChain.then(()=>cloudSaveAdmin(payload,pw)).catch(e=>{console.warn('cloud save queue failed',e);toast('クラウド保存に失敗しました。端末には保存されています')})}}
+function cloudSaveKeepalive(){if(!admin||!adminPwSession||!SUPA.url||!SUPA.publishableKey)return;try{const body=JSON.stringify({p_password:adminPwSession,p_data:cloudPayload()});fetch(SUPA.url+'/rest/v1/rpc/save_app_state',{method:'POST',headers:{'apikey':SUPA.publishableKey,'Authorization':'Bearer '+SUPA.publishableKey,'Content-Type':'application/json'},body,keepalive:true}).catch(()=>{})}catch(e){}}
+window.addEventListener('pagehide',cloudSaveKeepalive);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')cloudSaveKeepalive()});
+async function refreshCloudState(){const remote=await cloudRead();if(!remote)return false;const lm=persistMeta(db),rm=persistMeta(remote);if(rm&&lm&&Number(rm.updatedAt)<=Number(lm.updatedAt))return false;if(rm&&(!lm||Number(rm.updatedAt)>Number(lm.updatedAt))){adoptCloudData(remote);render();return true}return false}
+function syncAttendanceCloud(eventId,playerId,status,note){if(!sb||!cloudReady)return Promise.resolve(false);attendanceCloudChain=attendanceCloudChain.then(async()=>{try{const {data,error}=await sb.rpc('update_attendance',{p_event_id:eventId,p_player_id:playerId,p_status:status,p_note:note||''});if(error||data!==true){console.warn('attendance sync failed',error||'update_attendance returned false');toast('出欠のクラウド保存に失敗しました。端末には保存されています');return false}return true}catch(e){console.warn(e);toast('出欠のクラウド保存に失敗しました。端末には保存されています');return false}});return attendanceCloudChain}
+async function cloudInit(){if(!sb){console.warn('Supabase config missing');return}try{const remote=await cloudRead();const lm=persistMeta(db),rm=persistMeta(remote);if(remote){if(rm&&lm){if(Number(rm.updatedAt)>Number(lm.updatedAt))adoptCloudData(remote)}else if(!lm){const hasLocal=(Array.isArray(db.players)&&db.players.length)||(Array.isArray(db.games)&&db.games.length)||(Array.isArray(db.events)&&db.events.length)||(Array.isArray(db.atBats)&&db.atBats.length)||(Array.isArray(db.pitches)&&db.pitches.length);if(!hasLocal)adoptCloudData(remote);else{markLocalChange();localSave()}}else{markLocalChange();localSave()}}else{markLocalChange();localSave()}cloudReady=true;render();if(admin&&adminPwSession){const payload=cloudPayload(),pw=adminPwSession;cloudSaveChain=cloudSaveChain.then(()=>cloudSaveAdmin(payload,pw)).catch(()=>{})}}catch(e){console.warn('cloud init failed',e)}}
 let bat={result:null,detail:null,pos:null,rbi:0,runs:0,steals:0,cs:0};
 let pitch={inningsOuts:0,bf:0,ab:0,pitches:0,hits:0,hr:0,sacBunt:0,sacFly:0,bb:0,hbp:0,k:0,wp:0,balk:0,runs:0,earnedRuns:0,decision:'',save:0};
 function exportAppData(){
@@ -176,7 +122,7 @@ function toast(x){let e=document.getElementById('toast');e.textContent=x;e.class
 function applyChampionshipPhoto(){const photo=localStorage.getItem("tomakomai_futo_championship_photo");document.documentElement.style.setProperty("--championship-photo",photo?`url("${photo}")`:'url("championship.jpg")');}
 function setChampionshipPhoto(input){const f=input?.files?.[0];if(!f)return;if(!f.type.startsWith("image/"))return toast("画像ファイルを選択してください");const r=new FileReader();r.onload=()=>{localStorage.setItem("tomakomai_futo_championship_photo",r.result);applyChampionshipPhoto();toast("優勝集合写真を設定しました");render()};r.readAsDataURL(f)}
 function clearChampionshipPhoto(){localStorage.removeItem("tomakomai_futo_championship_photo");applyChampionshipPhoto();toast("優勝集合写真を削除しました");render()}
-function render(){applyChampionshipPhoto();let a=document.getElementById('app');({home:()=>a.innerHTML=home(),games:()=>a.innerHTML=games(),game:()=>a.innerHTML=gameForm(),players:()=>a.innerHTML=players(),player:()=>a.innerHTML=playerForm(),batting:()=>a.innerHTML=batting(),atbats:()=>a.innerHTML=atbats(),pitching:()=>a.innerHTML=pitching(),pitches:()=>a.innerHTML=pitches(),stats:()=>a.innerHTML=stats(),annual2026:()=>a.innerHTML=annual2026(),calendar:()=>a.innerHTML=calendar(),event:()=>a.innerHTML=eventForm(),settings:()=>a.innerHTML=settings(),announcements:()=>a.innerHTML=announcements(),announcement:()=>a.innerHTML=announcementForm()})[screen]()}
+function render(){applyChampionshipPhoto();let a=document.getElementById('app');({home:()=>a.innerHTML=home(),games:()=>a.innerHTML=games(),game:()=>a.innerHTML=gameForm(),players:()=>a.innerHTML=players(),player:()=>a.innerHTML=playerForm(),batting:()=>a.innerHTML=batting(),atbats:()=>a.innerHTML=atbats(),pitching:()=>a.innerHTML=pitching(),pitches:()=>a.innerHTML=pitches(),stats:()=>a.innerHTML=stats(),annual2026:()=>a.innerHTML=annual2026(),calendar:()=>a.innerHTML=calendar(),event:()=>a.innerHTML=eventForm(),settings:()=>a.innerHTML=settings(),selfplayer:()=>a.innerHTML=selfPlayer(),announcements:()=>a.innerHTML=announcements(),announcement:()=>a.innerHTML=announcementForm()})[screen]()}
 function home(){
   const years=[...new Set([
     new Date().getFullYear(),
@@ -208,6 +154,7 @@ function home(){
       <div class="cover-photo baseball-photo" aria-hidden="true"></div>
       <div class="cover-overlay"></div>
       <div class="cover-content">
+        <div class="cover-tools"><label class="cover-player-select"><span>👤 自分の選手を選択</span><select onchange="setCurrentPlayer(this.value)"><option value="">未設定</option><option value="admin" ${db.currentPlayerId==='admin'?'selected':''}>管理者</option>${db.players.map(p=>`<option value="${p.id}" ${db.currentPlayerId===p.id?'selected':''}>${esc(p.name)}（#${esc(p.number)}）</option>`).join('')}</select></label></div>
         <div class="home-summary-row home-summary-in-cover">
           <div class="slogan-photo-wrap"><div class="stadium-card home-stadium-card"><div class="stadium-art championship-photo"><span>仲間と、<br>最高の景色を。</span></div></div></div>
           <div class="season-board home-season-board">
@@ -364,6 +311,8 @@ function eventForm(){
  if(upcomingOnly) return upcomingParticipantView();
  const e=db.events.find(x=>x.id===eventId), edit=!!e;
  const att=e?.attendance||{};
+ const me=db.players.find(p=>p.id===db.currentPlayerId);
+ const myStatus=me?(att[me.id]||'未回答'):'未設定';
  const statusOptions=['参加','欠席','未回答'];
  return `<section class=screen><button class=secondary onclick="screen='calendar';render()">← カレンダー</button><h2>${edit?'予定を修正':'予定を登録'}</h2><div class=card>
  <div class=field><label>区分</label><select id=ekind ${admin?'':'disabled'}><option ${e?.kind==='試合'?'selected':''}>試合</option><option ${e?.kind==='練習'?'selected':''}>練習</option><option ${e?.kind==='その他'?'selected':''}>その他</option></select></div>
@@ -372,7 +321,7 @@ function eventForm(){
  <div class=field><label>場所</label><input id=evenue ${admin?'':'disabled'} value="${esc(e?.venue||'')}" placeholder="例：清水球場"></div>
  <div class=field><label>その他（特記事項）</label><textarea id=enote ${admin?'':'disabled'} rows=4 placeholder="連絡事項・集合時間・持ち物など">${esc(e?.note||'')}</textarea></div>
  ${admin?`<button class=primary onclick="saveEvent()">${edit?'この予定を修正':'この予定を登録'}</button>${edit?`<button class=secondary onclick="if(confirm('この予定を削除しますか？')){db.events=db.events.filter(x=>x.id!==eventId);save();eventId=null;screen='calendar';toast('予定を削除しました');render()}">この予定を削除</button>`:''}`:`<p class=muted>予定の登録・変更・削除は管理者のみできます。</p>`}</div>
- ${edit?`<div class=card><h3>出欠</h3><p class=muted>選手ごとに出欠を変更できます。変更はクラウドへ即時保存されます。</p>${db.players.map(p=>{const ps=att[p.id]||'未回答',note=(e?.attendanceNotes||{})[p.id]||'';return `<div class="row attendance"><span><b>${esc(p.name)}</b> <small>#${esc(p.number)}</small></span><select onchange="setAttendance(${p.id},this.value)">${statusOptions.map(x=>`<option ${ps===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><input value="${esc(note)}" placeholder="備考（任意）" onchange="setAttendanceNote(${p.id},this.value)"></div>`}).join('')}</div>`:''}</section>`;
+ ${edit?`<div class=card><h3>自分の出欠</h3>${me?`<p><b>${esc(me.name)}</b>（#${esc(me.number)}）</p><div class=field><label>出欠</label><select onchange="setMyAttendance(this.value)">${statusOptions.map(x=>`<option ${myStatus===x?'selected':''}>${x}</option>`).join('')}</select></div><div class=field><label>備考</label><textarea id="myAttendanceNote" rows=3 placeholder="自由記載（例：仕事のため遅れて参加、送迎が必要 など）" onchange="setMyAttendanceNote(this.value)">${esc((e?.attendanceNotes||{})[me.id]||'')}</textarea></div><p class=muted>この端末に設定した「自分の選手」の出欠と備考だけ変更できます。</p>`:`<p class=muted>先に「設定」から自分の選手を設定してください。</p><button class=secondary onclick="screen='settings';render()">自分の選手を設定</button>`}</div>${admin?`<div class=card><h3>管理者用・全員の出欠</h3><p class=muted>管理者は各選手の出欠を変更できます。</p>${db.players.map(p=>`<div class="row attendance"><span><b>${esc(p.name)}</b> <small>#${esc(p.number)}</small></span><select onchange="setAttendance(${p.id},this.value)">${statusOptions.map(x=>`<option ${((att[p.id]||'未回答')===x)?'selected':''}>${x}</option>`).join('')}</select></div>`).join('')}</div>`:''}`:''}</section>`;
 }
 function saveEvent(){let old=db.events.find(x=>x.id===eventId);let e={id:eventId||Date.now(),kind:document.getElementById('ekind').value,date:document.getElementById('edate').value,time:document.getElementById('etime').value,venue:document.getElementById('evenue').value.trim(),note:document.getElementById('enote').value.trim(),attendance:old?.attendance||{},attendanceNotes:old?.attendanceNotes||{}};if(old)db.events=db.events.map(x=>x.id===e.id?e:x);else db.events.push(e);save();eventId=e.id;toast(old?'予定を修正しました':'予定を登録しました');render()}
 
@@ -381,25 +330,12 @@ function announcementForm(){const x=db.announcements.find(a=>a.id===announcement
 function saveAnnouncement(){if(!requireAdmin())return;const text=document.getElementById('atext').value.trim();if(!text)return toast('お知らせ内容を入力してください');const x={id:announcementId||Date.now(),date:document.getElementById('adate').value,text};if(announcementId)db.announcements=db.announcements.map(a=>a.id===announcementId?x:a);else db.announcements.push(x);save();toast(announcementId?'お知らせを修正しました':'お知らせを登録しました');announcementId=x.id;screen='announcements';render()}
 function deleteAnnouncement(id){if(!requireAdmin())return;if(!confirm('このお知らせを削除しますか？'))return;db.announcements=db.announcements.filter(x=>x.id!==id);save();announcementId=null;toast('お知らせを削除しました');screen='announcements';render()}
 
-async function setAttendance(pid,status){
- const e=db.events.find(x=>x.id===eventId);
- if(!e||!db.players.some(p=>p.id===+pid))return;
- const allowed=['参加','欠席','未回答']; if(!allowed.includes(status))return;
- if(!e.attendance)e.attendance={};
- const oldStatus=e.attendance[pid]||'未回答'; e.attendance[pid]=status; localSave();
- const ok=await syncAttendanceCloud(eventId,+pid,status,(e.attendanceNotes||{})[pid]||'');
- if(!ok){e.attendance[pid]=oldStatus;localSave();render();return}
- toast('出欠を保存しました'); render();
-}
-async function setAttendanceNote(pid,note){
- const e=db.events.find(x=>x.id===eventId);
- if(!e||!db.players.some(p=>p.id===+pid))return;
- if(!e.attendanceNotes)e.attendanceNotes={};
- const oldNote=e.attendanceNotes[pid]||''; e.attendanceNotes[pid]=String(note||'').trim(); localSave();
- const ok=await syncAttendanceCloud(eventId,+pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);
- if(!ok){e.attendanceNotes[pid]=oldNote;localSave();render();return}
- toast('備考を保存しました');
-}
+async function setAttendance(pid,status){if(!admin)return;let e=db.events.find(x=>x.id===eventId);if(!e)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;saveLocalOnly();return}toast('出欠を更新しました');render()}
+async function setMyAttendanceNote(note){if(db.currentPlayerId==='admin'){toast('管理者は選手としての備考登録対象ではありません');return}if(admin)return;let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendanceNotes)e.attendanceNotes={};const oldNote=e.attendanceNotes[pid]||'';e.attendanceNotes[pid]=String(note||'').trim();saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,e.attendance?.[pid]||'未回答',e.attendanceNotes[pid]);if(!ok){e.attendanceNotes[pid]=oldNote;saveLocalOnly();return}toast('備考を保存しました')}
+async function setMyAttendance(status){if(db.currentPlayerId==='admin'){toast('管理者は選手としての出欠登録対象ではありません');return}if(admin)return setAttendance(db.currentPlayerId,status);let e=db.events.find(x=>x.id===eventId),pid=db.currentPlayerId;if(!e||!pid)return;if(!e.attendance)e.attendance={};const oldStatus=e.attendance[pid]||'未回答';e.attendance[pid]=status;saveLocalOnly();const ok=await syncAttendanceCloud(eventId,pid,status,(e.attendanceNotes||{})[pid]||'');if(!ok){e.attendance[pid]=oldStatus;saveLocalOnly();return}toast('自分の出欠を更新しました');render()}
+function setCurrentPlayer(id){if(id==='admin'){db.currentPlayerId='admin';saveLocalOnly();toast('管理者を設定しました');render();return}id=+id||null;if(!db.players.some(p=>p.id===id))id=null;db.currentPlayerId=id;saveLocalOnly();toast(id?'自分の選手を設定しました':'自分の選手設定を解除しました');render()}
+
+function selfPlayer(){const isAdminUser=db.currentPlayerId==='admin';const me=db.players.find(p=>p.id===db.currentPlayerId);return `<section class=screen><button class=secondary onclick="screen='home';render()">← メイン画面へ</button><h2>自分の選手を設定</h2><div class=card><h3>👤 この端末を使う人</h3><p class=muted>メイン画面に表示する名前を選択できます。</p><div class=field><label>自分の選手</label><select onchange="setCurrentPlayer(this.value)"><option value="">未設定</option><option value="admin" ${isAdminUser?'selected':''}>管理者</option>${db.players.map(p=>`<option value="${p.id}" ${me?.id===p.id?'selected':''}>${esc(p.name)}（#${esc(p.number)}）</option>`).join('')}</select></div>${isAdminUser?`<div class=notice-box><b>現在の設定</b><br>管理者</div>`:me?`<div class=notice-box><b>現在の設定</b><br>${esc(me.name)}（#${esc(me.number)}）</div>`:`<p class=muted>まだ自分の設定がされていません。</p>`}<button class=secondary onclick="setCurrentPlayer('')">自分の設定を解除</button></div></section>`}
 function settings(){const y=db.annualStats[2026]||{};return `<section class=screen><h2>設定</h2><div class=card><h3>管理者モード</h3><p>${admin?'現在：管理者モード（成績の変更が可能）':'現在：閲覧モード（成績は変更できません）'}</p><p class="muted">クラウド：${cloudReady?'接続済み':'接続確認中'}</p>${admin?`<button class=primary onclick="adminLogout()">管理者モードを終了</button><button class=secondary onclick="changeAdminPassword()">管理者パスワードを変更</button>`:`<button class=primary onclick="adminLogin()">管理者ログイン</button>`}</div>${admin?`<div class=card><h3>📊 2026年度 年間成績</h3><p>${y.locked?'🔒 確定・ロック済み':'未確定（入力・保存できます）'}</p><button class=primary onclick="screen='annual2026';render()">${y.locked?'2026年度成績を確認':'2026年度成績を一括入力'}</button>${y.locked?`<button class=secondary style="width:100%;margin-top:8px" onclick="unlockAnnual2026()">🔓 ロックを解除</button>`:''}</div>`:''}<div class=card><b>データ保存・本番移行</b><p class=muted>現在の端末に保存されているデータをバックアップできます。クラウド版へ移行する際にも使用します。</p>${admin?`<button class=primary onclick="exportAppData()">📦 データをバックアップ</button><label class="secondary" style="display:block;text-align:center;margin-top:8px;cursor:pointer">📥 バックアップを復元<input type="file" accept="application/json,.json" style="display:none" onchange="importAppData(this)"></label><button class=secondary onclick="if(confirm('全データを削除しますか？')){localStorage.removeItem(KEY);location.reload()}">全データ削除</button>`:''}</div></section>`}
 render();
 cloudInitPromise=cloudInit();
